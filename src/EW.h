@@ -197,6 +197,7 @@ void processGMT(char* buffer);
 void processDeveloper(char* buffer);
 void processGlobalMaterial(char* buffer);
 void processTopography(char* buffer);
+void processEQL(char* buffer);
 void processAttenuation(char* buffer);
    //void processRandomize(char* buffer);
 void processRandomBlock(char* buffer);
@@ -1352,6 +1353,32 @@ void velsum_ci( int is, int ie, int js, int je, int ks, int ke,
    AllDims* get_fine_alldimobject( );
    void grid_information( int g );
    void check_ic_conditions( int gc, vector<Sarray>& a_U );
+
+// Equivalent linear functions
+bool usingEQL(){return m_use_EQL;};
+int getEQLIter(){return m_iter_EQL;};
+void incrementEQLIter(){m_iter_EQL += 1;};
+bool isEQLConverged();
+void calculateEQLUpdate(vector<Source*> & a_Sources);
+float_sw4 calculateDarendeli(int i, int j, int k, int g, vector<Source*> & a_Sources);
+void getCoordinates(int i, int j, int k, int g, float_sw4 &x, float_sw4 &y, float_sw4 &z);
+void calcEQLDispl(vector<Sarray> &U);
+void extrapolateEQL(int g);
+void extrapolateInXYEQL( vector<Sarray>& field, int g );
+void updateEmax(vector<Sarray> &U);
+void updateEmax(vector<Sarray*> &U);
+
+void check_materials_EQL();
+float_sw4 localMax_EQL(std::vector<Sarray> & a_field);
+float_sw4 localMin_EQL(std::vector<Sarray> & a_field);
+float_sw4 localMinVp_EQL();
+float_sw4 localMaxVp_EQL(); 
+float_sw4 localMinVs_EQL(); 
+float_sw4 localMaxVs_EQL(); 
+float_sw4 localMinVpOverVs_EQL();
+float_sw4 localMaxVpOverVs_EQL(); 
+// end equivalent linear functions
+
 //
 // VARIABLES BEYOND THIS POINT
 //
@@ -1429,6 +1456,14 @@ vector<Sarray> mRho;
 vector<Sarray*> mMuVE, mLambdaVE;// Attenuation material
 vector<Sarray> mC; // Anisotropic material parameters
 Sarray mCcurv; // Anisotropic material with metric (on curvilinear grid).
+
+vector<Sarray> mMuOrig_EQL; // Equivalent linear shear modulus
+vector<Sarray> mEmax;  // Equivalent linear tracking of max strain
+vector<Sarray> mQsOrig_EQL;  // Equivalent linear storage of small strain damping
+
+// EQL tracking of displacement for strain calculation given that sometimes
+// Um/U/Up in SW4 actually represents velocity or acceleration
+vector<Sarray*> U_EQL;  
 
 // Store coefficeints needed for Mesh refinement
 vector<Sarray> m_Morf, m_Mlrf, m_Mufs, m_Mlfs, m_Morc, m_Mlrc, m_Mucs, m_Mlcs;
@@ -1527,6 +1562,26 @@ vector<int *> m_NumberOfBCPoints;
 // ghost point index window for each side of the boundary on each grid
 vector<int *> m_BndryWindow;
 
+// Equivalent linear variables
+bool m_use_EQL;
+bool m_conv_EQL;
+int m_iterLim_EQL;
+int m_iter_EQL;
+int m_srctype_EQL;
+
+vector<float_sw4> m_vsConv_EQL; // holds largest % change in vs for nodes in vs bins
+vector<float_sw4> m_vsBins_EQL; // bin boundaries for vs convergence criteria
+float_sw4 m_convPercent_EQL; // convergence criteria for EQL
+
+// (EQL) Track the max and min cartesian coords. of a bounding box around all
+// of the sources
+//float_sw4 m_src_xmax, m_src_xmin, m_src_ymax, m_src_ymin, m_src_zmax, m_src_zmin;
+vector<Sarray> m_min_dist_to_srcs;
+float_sw4 m_src_Dmin;
+float_sw4 m_vslim_eql;
+
+vector<int> m_iStartIntEQL, m_iEndIntEQL, m_jStartIntEQL, m_jEndIntEQL, m_kStartIntEQL, m_kEndIntEQL; 
+// end eql variables
 
 // attenuation variables (only allocated if attenuation is enabled)
 bool m_use_attenuation, m_att_use_max_frequency;

@@ -627,16 +627,16 @@ void EW::extrapolateInZ( int g, Sarray& field, bool lowk, bool highk )
 {
    if( lowk )
       for( int k=m_kStart[g] ; k < 1 ; k++ )
-	 for( int j=m_jStart[g] ; j <= m_jEnd[g] ; j++ )
-	    for( int i=m_iStart[g] ; i <= m_iEnd[g] ; i++ )
-	       if( field(i,j,k) == -1 )
-		  field(i,j,k) = field(i,j,1);
+      for( int j=m_jStart[g] ; j <= m_jEnd[g] ; j++ )
+      for( int i=m_iStart[g] ; i <= m_iEnd[g] ; i++ )
+        if( field(i,j,k) == -1 )
+          field(i,j,k) = field(i,j,1);
    if( highk )
       for( int k=m_kEndInt[g]+1 ; k <= m_kEnd[g] ; k++ )
-	 for( int j=m_jStart[g] ; j <= m_jEnd[g] ; j++ )
-	    for( int i=m_iStart[g] ; i <= m_iEnd[g] ; i++ )
-	       if( field(i,j,k) == -1 )
-		  field(i,j,k) = field(i,j,m_kEndInt[g]);
+      for( int j=m_jStart[g] ; j <= m_jEnd[g] ; j++ )
+      for( int i=m_iStart[g] ; i <= m_iEnd[g] ; i++ )
+        if( field(i,j,k) == -1 )
+          field(i,j,k) = field(i,j,m_kEndInt[g]);
 }
 
 //-----------------------------------------------------------------------

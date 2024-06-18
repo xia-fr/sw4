@@ -494,6 +494,14 @@ EW::EW(const string& fileName, vector<vector<Source*> > & a_GlobalSources,
   //  m_intp_conservative(true),
   mMaterialExtrapolate(0),
 
+  m_use_EQL(false),
+  m_conv_EQL(false),
+  m_iterLim_EQL(99),
+  m_iter_EQL(0),
+  m_srctype_EQL(-1),
+  m_src_Dmin(3000.0),
+  m_vslim_eql(3000.0),
+
   m_use_attenuation(false),
   m_number_mechanisms(0),
   m_velo_omega(-1.0),
@@ -7956,6 +7964,7 @@ void EW::setup_viscoelastic( )
 		   if (bsum>=1.)
 		   {
 		      printf("setup_viscoelastic:: sum(beta)=%e >= 1 for g=%i, i=%i, j=%i, k=%i\n", bsum, g, i, j, k);
+          printf("qs=%e", qs);
 		      MPI_Abort(MPI_COMM_WORLD, 1);
 		   }
 

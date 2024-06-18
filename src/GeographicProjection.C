@@ -184,7 +184,7 @@ void GeographicProjection::computeCartesianCoordGMG(double &x, double &y,
 
   /* printf("computeCartesianCoordGMG: crs_to %s\n", crs_to); */
 
-  if (m_Pgmg == NULL)
+  if (m_Pgmg == NULL) // fx: this if statement causes a segfault if GeographicProjection is initialized using the (void) constructor?
     m_Pgmg  = proj_create_crs_to_crs(PJ_DEFAULT_CTX, crs_from, crs_to, NULL);
 
   ASSERT(m_Pgmg);

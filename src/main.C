@@ -181,7 +181,7 @@ main(int argc, char **argv)
     { 
       if (myRank == 0)
       {
-	cout << "Error: simulation object not ready for time stepping" << endl;
+	      cout << "Error: simulation object not ready for time stepping" << endl;
       }
       status=1;
     }
@@ -226,12 +226,58 @@ main(int argc, char **argv)
       int ng=simulation.mNumberOfGrids;
       vector<DataPatches*> upred_saved(ng), ucorr_saved(ng);
       vector<Sarray> U(ng), Um(ng), ph(ng);
-      simulation.solve( GlobalSources[0], GlobalTimeSeries[0], simulation.mMu, 
-			simulation.mLambda, simulation.mRho, U, Um, upred_saved, 
-			ucorr_saved, false, 0, 0, 0, ph );
+      if (simulation.usingEQL())
+      {
+        //string basePath = simulation.getOutputPath();
+        //basePath.pop_back(); // remove the ending "/"
+        while (!simulation.isEQLConverged())
+        {
+          if (myRank == 0)
+            cout << "STARTING EQUIVALENT LINEAR ITERATION: " << simulation.getEQLIter() << endl;
+
+          // Make a copy of the time series
+          //vector<TimeSeries*> EQLTimeSeries = GlobalTimeSeries[0];
+          //vector<Sarray> U_eql(ng), Um_eql(ng);
+
+          // EQLTODO: ADD OPTION TO SAVE THESE INTERMITTENT RESULTS AS WELL?
+
+          // Run iteration with equivalent linear material properties
+          // - simulation.solve(...) automatically sets U, Um, etc. memory variables
+          //   to zero at start of simulation, and resets time variables
+          simulation.solve( GlobalSources[0], GlobalTimeSeries[0], simulation.mMu, 
+            simulation.mLambda, simulation.mRho, U, Um, upred_saved, 
+            ucorr_saved, false, 0, 0, 0, ph );
+
+          // Update equivalent linear material properties
+          #if USE_HDF5 
+          #else
+            if (myRank == 0) cout << "Reversing viscoelastic..." << endl;
+            simulation.reverse_setup_viscoelastic();
+          #endif
+
+          simulation.calculateEQLUpdate(GlobalSources[0]);
+          simulation.setup_viscoelastic(); // calculates VE mu and lambda with updated qs&qp
+          // preprocess sources in future for the sources that need correction by mu?
+
+          simulation.incrementEQLIter();
+        }
+        if (myRank == 0)
+          cout << endl << "EQUIVALENT LINEAR FINAL ITERATION: " << simulation.getEQLIter() << endl;
+
+        // Run final iteration after convergence detected
+        simulation.solve( GlobalSources[0], GlobalTimeSeries[0], simulation.mMu,  
+          simulation.mLambda, simulation.mRho, U, Um, upred_saved, 
+          ucorr_saved, false, 0, 0, 0, ph );
+      }
+      else
+      {
+        simulation.solve( GlobalSources[0], GlobalTimeSeries[0], simulation.mMu, 
+          simulation.mLambda, simulation.mRho, U, Um, upred_saved, 
+          ucorr_saved, false, 0, 0, 0, ph );
+      }
+      
 
 // save all time series
-      
       double myWriteTime = 0.0, allWriteTime;
       for (int ts=0; ts<GlobalTimeSeries[0].size(); ts++)
       {
