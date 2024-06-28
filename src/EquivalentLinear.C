@@ -86,7 +86,7 @@ bool EW::isEQLConverged()
   // Reset equivalent linear arrays
   for( int g = 0 ; g < mNumberOfGrids; g++)
   {
-    mEmax[g].set_to_zero();
+    mEmax[g].set_to_minusOne();
     for (int a = 0; a < m_srctype_EQL; a++)
     {
       U_EQL[g][a].set_to_zero();
@@ -110,6 +110,11 @@ void EW::calculateEQLUpdate(vector<Source*> & a_Sources)
   if (m_myRank == 0 && m_iterLim_EQL != 0)
     cout << endl << "Calculating updated equivalent linear material properties..." << endl;
 
+  // If there is more than one grid, we apply smoothing to the material properties at the
+  // boundaries between grids to ensure good material property compatibility at bounds
+  if (mNumberOfGrids > 1)
+    preprocessInterfaceEQL(mEmax);
+
   // Iterate over every item in grid
   for( int g = 0 ; g < mNumberOfGrids; g++)
   {
@@ -129,8 +134,8 @@ void EW::calculateEQLUpdate(vector<Source*> & a_Sources)
           float_sw4 vs_old = sqrt(mMu[g](i,j,k)/mRho[g](i, j, k));
 
           // Reset the material arrays
-          // mQs[g](i,j,k) = mQsOrig_EQL[g](i,j,k);
-          // mMu[g](i,j,k) = mMuOrig_EQL[g](i,j,k);
+          //mQs[g](i,j,k) = mQsOrig_EQL[g](i,j,k);
+          //mMu[g](i,j,k) = mMuOrig_EQL[g](i,j,k);
           mQs[g](i,j,k) = -1.0;
           mQp[g](i,j,k) = -1.0;
           mMu[g](i,j,k) = -1.0;
@@ -150,7 +155,7 @@ void EW::calculateEQLUpdate(vector<Source*> & a_Sources)
             float_sw4 vs = sqrt(mMuOrig_EQL[g](i, j, k)/mRho[g](i, j, k));
             float_sw4 vs_new = sqrt(mMu[g](i, j, k)/mRho[g](i, j, k));
 
-            if(m_iterLim_EQL!=0)
+            if(m_iterLim_EQL!=0) 
             {
               if (vs < m_vsBins_EQL[0])
                 maxvsConv0 = max(maxvsConv0, abs(vs_new-vs_old)/vs_old*100);
@@ -163,37 +168,18 @@ void EW::calculateEQLUpdate(vector<Source*> & a_Sources)
             }
 
             // Debug
-            float_sw4 x, y, z;
-            getCoordinates(i, j, k, g, x, y, z);
-            if (x == 5000.0 && y == 4750.0 && z == 2500.0)
-            {
-              cout << "i" << i << " j" << j << " k" << k << endl;
-              cout << "grid " <<  g << endl;
-              cout << "eref " <<  mEmax[g](i, j, k) << endl;
-              cout << "vs " << vs_new << endl;
-              cout << "ggmax " << ggmax << endl;
-              cout << " " << endl;
-            }
-
-            if (x == 5000.0 && y == 4750.0 && z == 2550.0)
-            {
-              cout << "i" << i << " j" << j << " k" << k << endl;
-              cout << "grid " <<  g << endl;
-              cout << "eref " <<  mEmax[g](i, j, k) << endl;
-              cout << "vs " << vs_new << endl;
-              cout << "ggmax " << ggmax << endl;
-              cout << " " << endl;
-            }
-
-            if (x == 5000.0 && y == 4750.0 && z == 2450.0)
-            {
-              cout << "i" << i << " j" << j << " k" << k << endl;
-              cout << "grid " <<  g << endl;
-              cout << "eref " <<  mEmax[g](i, j, k) << endl;
-              cout << "vs " << vs_new << endl;
-              cout << "ggmax " << ggmax << endl;
-              cout << " " << endl;
-            }
+            //float_sw4 x, y, z;
+            //getCoordinates(i, j, k, g, x, y, z);
+            //if (x == 5000.0 && y == 5000.0 && z == 2500.0)
+            //{
+            //  cout << "i" << i << " j" << j << " k" << k << endl;
+            //  cout << "x" << x << " y" << y << " z" << z << endl;
+            //  cout << "grid " <<  g << endl;
+            //  cout << "eref " <<  mEmax[g](i, j, k) << endl;
+            //  cout << "vs " << vs_new << endl;
+            //  cout << "ggmax " << ggmax << endl;
+            //  cout << " " << endl;
+            //}
             
           } // End if point in EQL domain
           
@@ -210,14 +196,56 @@ void EW::calculateEQLUpdate(vector<Source*> & a_Sources)
       MPI_Allreduce(&maxvsConv3,&m_vsConv_EQL[3],1,m_mpifloat,MPI_MAX,m_cartesian_communicator);
     }
 
-    // Material array extrapolation
-    extrapolateEQL(g);
-
+    // First: communicate ghost points between processors in x and y dir.
     communicate_array( mQs[g], g );
     communicate_array( mQp[g], g );
     communicate_array( mMu[g], g );
 
+    // Extrapolate to define material properties above the free surface (topography)
+    if (g == mNumberOfGrids-1)
+    {
+      extrapolateInZ(g, mMu[g], true, false );
+      extrapolateInZ(g, mQs[g], true, false );
+      extrapolateInZ(g, mQp[g], true, false );
+    }
+    // OR
+    // Extrapolate to ghost points at bottom of domain
+    // (every grid does this one for continuity)
+    extrapolateInZ(g, mMu[g], false, true );
+    extrapolateInZ(g, mQs[g], false, true );
+    extrapolateInZ(g, mQp[g], false, true );
+
+    // // Debug: print out the ghost points
+    // if (proc_zero())
+    // {
+    //   cout << "1(inner): " << mMu[g](1, m_iEnd[g], m_jStartIntEQL[g], m_kStartIntEQL[g]) << endl;
+    //   cout << "2(inner): " << mMu[g](1, m_iEnd[g]-1, m_jStartIntEQL[g], m_kStartIntEQL[g]) << endl;
+    //   cout << "1(inner2): " << mMu[g](1, m_iEnd[g], m_jStartIntEQL[g], m_kStartIntEQL[g]+1) << endl;
+    //   cout << "2(inner2): " << mMu[g](1, m_iEnd[g]-1, m_jStartIntEQL[g], m_kStartIntEQL[g]+1) << endl;
+    //   cout << "1(above?): " << mMu[g](1, m_iStartIntEQL[g], m_jStartIntEQL[g], m_kStart[g]) << endl;
+    //   cout << "2(above?): " << mMu[g](1, m_iEndIntEQL[g], m_jStartIntEQL[g], m_kStart[g]) << endl;
+    //   cout << "1(corner?): " << mMu[g](1, m_iEnd[g], m_jStartIntEQL[g], m_kStart[g]) << endl;
+    //   cout << "2(corner?): " << mMu[g](1, m_iEnd[g]-1, m_jStartIntEQL[g], m_kStart[g]) << endl;
+    // }
+
   } // End g
+
+  // If there is more than one grid, we apply smoothing to the material properties at the
+  // boundaries between grids to ensure good material property compatibility at bounds
+  if (mNumberOfGrids > 1)
+  {
+    processInterfaceEQL(mMu);
+    processInterfaceEQL(mQs);
+    processInterfaceEQL(mQp);
+  }
+
+  // Extrapolate to ghost points in x and y, if they were not set by the previous routines.
+  // e.g. ghost points on the outside boundary of the model and corner points
+  // after this point there should be no "-1" values left in any grid
+  extrapolateInXY_EQL(mMu);
+  extrapolateInXY_EQL(mQs);
+  extrapolateInXY_EQL(mQp);
+
   // Check materials
   if (m_iterLim_EQL != 0)
     check_materials_EQL();
@@ -300,6 +328,7 @@ float_sw4 EW::calculateDarendeli(int i, int j, int k, int g, vector<Source*> & a
   float_sw4 Eref = mEmax[g](i, j, k) * 0.65 * 100; // strain in percent
 
   float_sw4 ggmax = max(1.0 / (1 + pow(Eref/gamma_r, a)), ggmax_min);
+  ggmax = min(1.0, ggmax);
 
   // Attenuation 
   float_sw4 xi = 1.0 / (2.0 * (mQsOrig_EQL[g](i, j, k))) * 100; // units: %
@@ -323,7 +352,7 @@ float_sw4 EW::calculateDarendeli(int i, int j, int k, int g, vector<Source*> & a
 
       float_sw4 D_min = (phi6 + phi7 * M_PI * pow(OCR, phi8)) * pow(sigma_0, phi9) * (1 + phi10 * log(frq));
       float_sw4 D_adj = b * pow(ggmax, 0.1) * D_masing; // units: %
-      xi = max(xi, D_min+D_adj);
+      xi = xi+D_adj;
     } 
   }
 
@@ -443,7 +472,6 @@ void EW::calcEQLDispl(vector<Sarray> &U)
         }
       }
     }
-    // this step may not be required?
     communicate_array( U_EQL[g][0], g );
     if (m_srctype_EQL == 2) communicate_array( U_EQL[g][1], g );
   }
@@ -454,10 +482,13 @@ void EW::calcEQLDispl(vector<Sarray> &U)
 // 
 // 
 //---------------------------------------------------------------
-void EW::updateEmax(vector<Sarray*> &U)
+bool EW::updateEmax(vector<Sarray*> &U)
 {
+  int supergrid_pts;
+  bool updated = false;
   for( int g = 0 ; g < mNumberOfGrids; g++)
   {
+    supergrid_pts = static_cast<int>(m_supergrid_width/mGridSize[g]);
     #pragma omp parallel for     
     for( int k = m_kStartIntEQL[g] ; k <= m_kEndIntEQL[g]; k++ )
     {
@@ -465,23 +496,32 @@ void EW::updateEmax(vector<Sarray*> &U)
       {
         for( int i = m_iStartIntEQL[g] ; i <= m_iEndIntEQL[g] ; i++ )
         {
+          float_sw4 x, y, z;
+          float_sw4 ptDepth;
           float_sw4 vs = sqrt(mMuOrig_EQL[g](i, j, k)/mRho[g](i, j, k));
+          getCoordinates(i, j, k, g, x, y, z);
+          getDepth(x, y, z, ptDepth); // Gets total depth below free surface including topography
 
-          // if the shear wave velocity is greater than vslim, don't apply
-          if (vs > m_vslim_eql || m_min_dist_to_srcs[g](i,j,k) < m_src_Dmin)
+          // if the shear wave velocity is greater than vslim,
+          // or if too close to the source,
+          // or if depth below the set limit,
+          // or if its a supergrid point
+          // then don't apply eql (aka, set max strain = 0)
+          if ( (vs > m_vslim_eql) ||
+               (ptDepth > m_max_depth_eql) ||
+               (z > m_max_z_eql) ||
+               (m_min_dist_to_srcs[g](i,j,k) < m_src_Dmin) ||
+               (i <= supergrid_pts) ||
+               (i >= m_global_nx[g]-supergrid_pts) ||
+               (j <= supergrid_pts) ||
+               (j >= m_global_ny[g]-supergrid_pts) ||
+               (g == 0 && k >= m_global_nz[g]-supergrid_pts)
+             )
           { 
-            // Debugging
-            //if ((i == 252) && (j == 106) && (k == 280))
-            //{
-            //  cout << "i" << i << " j" << j << " k" << k << endl;
-            //  cout << "x" << x << " y" << y << " z" << z << endl;
-            //  cout << "xmin" << m_src_xmin - src_buffer << endl;
-            //  cout << "xmax" << m_src_xmax + src_buffer << endl;
-            //}
             mEmax[g](i, j, k) = 0.0;
           }
           else
-          {
+          { 
             if (g < mNumberOfCartesianGrids) // must be a Cartesian grid
             {
               //       int i=m_i0, j=m_j0, k=m_k0, g=m_grid0;
@@ -515,10 +555,20 @@ void EW::updateEmax(vector<Sarray*> &U)
               // approximation of max shear strain using J2
               float_sw4 J2_est = sqrt(4*J2);
 
+              // if (m_iterLim_EQL != 0)
+              //     mEmax[g](i, j, k) = max(J2_est, mEmax[g](i, j, k));
+              // else
+              //     mEmax[g](i, j, k) = J2_est;
               if (m_iterLim_EQL != 0)
-                  mEmax[g](i, j, k) = max(J2_est, mEmax[g](i, j, k));
-              else
+              {
+                if (J2_est > mEmax[g](i, j, k))
+                {
                   mEmax[g](i, j, k) = J2_est;
+                  updated = true;
+                }
+              }
+              // else
+              //   mEmax[g](i, j, k) = J2_est;
             }
             else // must be curvilinear
             {
@@ -567,17 +617,325 @@ void EW::updateEmax(vector<Sarray*> &U)
               float_sw4 J2_est = sqrt(4*J2);
 
               if (m_iterLim_EQL != 0)
-                  mEmax[g](i, j, k) = max(J2_est, mEmax[g](i, j, k));
-              else
+              {
+                if (J2_est > mEmax[g](i, j, k))
+                {
                   mEmax[g](i, j, k) = J2_est;
+                  updated = true;
+                }
+              }
+              // else
+              //   mEmax[g](i, j, k) = J2_est;
             }
           }
         }
       }
     }
-    communicate_array( mEmax[g], g );
+    //communicate_array( mEmax[g], g );
   } // end for all grids
+  return updated;
 } // end updateEmax
+
+//-----------------------------------------------------------------------
+// Preprocesses the strain field to smooth out values near
+// interfaces between two grids
+//-----------------------------------------------------------------------
+void EW::preprocessInterfaceEQL(vector<Sarray>& field)
+{
+  // Each grid interacts with the grid at the interface above it, 
+  // the top-most grid does not need to do anything
+  for( int g = 0 ; g < mNumberOfGrids-1; g++)
+  {
+    // Get the grid spacings
+    float_sw4 thisGrid_h = mGridSize[g];
+    float_sw4 aboveGrid_h = mGridSize[g+1];
+
+    // First, interpolate vertically across the shared boundary using two points
+    // north and south of the boundary point from each grid.
+    // We set the values to be in the finer grid, since they'll overwrite the
+    // coarser grid later on at these overlap areas
+    int ni=m_iEndIntEQL[g]-m_iStartIntEQL[g]+1, nj=m_jEndIntEQL[g]-m_jStartIntEQL[g]+1;
+    int g0_ib=m_iStartInt[g], g0_jb=m_jStartInt[g], g1_ib=m_iStartInt[g+1], g1_jb=m_jStartInt[g+1];
+    int g0_k=m_kStartInt[g], g1_k=m_kEndInt[g+1];
+    for( int jx = 0; jx <= nj; jx++ )
+    for( int ix = 0; ix <= ni; ix++ )
+    {
+      // Aka if this is interface between a cartesian and curvilinear grid
+      if (thisGrid_h == aboveGrid_h)
+      {
+        field[g+1](g1_ib+ix, g1_jb+jx, g1_k) = (field[g](g0_ib+ix, g0_jb+jx, g0_k+1)
+                                               +field[g](g0_ib+ix, g0_jb+jx, g0_k+2)
+                                               +field[g+1](g1_ib+ix, g1_jb+jx, g1_k-1)
+                                               +field[g+1](g1_ib+ix, g1_jb+jx, g1_k-2))/4.0;
+      }
+      else // aboveGrid_h = 1/2 * thisGrid_h
+      {
+        field[g+1](g1_ib+(2*ix), g1_jb+(2*jx), g1_k) = 
+                            (field[g](g0_ib+ix, g0_jb+jx, g0_k+1)
+                            +field[g](g0_ib+ix, g0_jb+jx, g0_k+2)
+                            +field[g+1](g1_ib+(2*ix), g1_jb+(2*jx), g1_k-1)
+                            +field[g+1](g1_ib+(2*ix), g1_jb+(2*jx), g1_k-2))/4.0;
+      }
+    }
+    communicate_array(field[g+1], g+1);
+
+    // Next, if the grid spacings aren't the same, interpolate the floating values
+    // on the finer grid using the new values
+    // Aka if this is interface between two grids with different discretization width
+    if (thisGrid_h != aboveGrid_h)
+    {
+      interpolateEQL(field, g, g1_k);
+    }
+  } // end for g
+  communicate_arrays(field);
+}
+
+//-----------------------------------------------------------------------
+// NOTE: this gets passed the index for grid g, but it acts on grid *g+1*
+// - Assumes that the points coinciding with the coarse grid have already
+//   been set by previous routines
+//-----------------------------------------------------------------------
+void EW::interpolateEQL(vector<Sarray>& field, int g, int g_k)
+{
+  int ni=m_iEndInt[g]-m_iStartInt[g]+1, nj=m_jEndInt[g]-m_jStartInt[g]+1;
+  int g1_ib=m_iStartInt[g+1], g1_jb=m_jStartInt[g+1];
+
+  // 1. The center points
+  for( int jx = 1; jx <= nj; jx++ )
+  for( int ix = 1; ix <= ni; ix++ )
+  {
+    field[g+1](g1_ib+(2*ix-1), g1_jb+(2*jx-1), g_k) = 
+      (field[g+1](g1_ib+(2*ix-2), g1_jb+(2*jx-2), g_k)
+      +field[g+1](g1_ib+(2*ix-2), g1_jb+(2*jx-0), g_k)
+      +field[g+1](g1_ib+(2*ix-0), g1_jb+(2*jx-2), g_k)
+      +field[g+1](g1_ib+(2*ix-0), g1_jb+(2*jx-0), g_k)
+      )/4.0;
+  }
+
+  // 2. odd points in ix
+  for( int jx = 0; jx <= nj; jx++ )
+  for( int ix = 1; ix <= ni; ix++ )
+  {
+    if (jx == 0)
+    {
+      field[g+1](g1_ib+(2*ix-1), g1_jb+(2*jx-0), g_k) = 
+        (field[g+1](g1_ib+(2*ix-2), g1_jb+(2*jx-0), g_k)
+        +field[g+1](g1_ib+(2*ix-0), g1_jb+(2*jx-0), g_k)
+        +field[g+1](g1_ib+(2*ix-1), g1_jb+(2*jx+1), g_k)
+        )/3.0;
+    }
+    else if (jx == nj)
+    {
+      field[g+1](g1_ib+(2*ix-1), g1_jb+(2*jx-0), g_k) = 
+        (field[g+1](g1_ib+(2*ix-2), g1_jb+(2*jx-0), g_k)
+        +field[g+1](g1_ib+(2*ix-0), g1_jb+(2*jx-0), g_k)
+        +field[g+1](g1_ib+(2*ix-1), g1_jb+(2*jx-1), g_k)
+        )/3.0;
+    }
+    else
+    {
+      field[g+1](g1_ib+(2*ix-1), g1_jb+(2*jx-0), g_k) = 
+        (field[g+1](g1_ib+(2*ix-2), g1_jb+(2*jx-0), g_k)
+        +field[g+1](g1_ib+(2*ix-0), g1_jb+(2*jx-0), g_k)
+        +field[g+1](g1_ib+(2*ix-1), g1_jb+(2*jx+1), g_k)
+        +field[g+1](g1_ib+(2*ix-1), g1_jb+(2*jx-1), g_k)
+        )/4.0;
+    }
+  }
+
+  // 3. odd points in jx
+  for( int jx = 1; jx <= nj; jx++ )
+  for( int ix = 0; ix <= ni; ix++ )
+  {
+    if (ix == 0)
+    {
+      field[g+1](g1_ib+(2*ix-0), g1_jb+(2*jx-1), g_k) = 
+        (field[g+1](g1_ib+(2*ix-0), g1_jb+(2*jx-2), g_k)
+        +field[g+1](g1_ib+(2*ix-0), g1_jb+(2*jx-0), g_k)
+        +field[g+1](g1_ib+(2*ix+1), g1_jb+(2*jx-1), g_k)
+        )/3.0;
+    }
+    else if (ix == ni)
+    {
+      field[g+1](g1_ib+(2*ix-0), g1_jb+(2*jx-1), g_k) = 
+        (field[g+1](g1_ib+(2*ix-0), g1_jb+(2*jx-2), g_k)
+        +field[g+1](g1_ib+(2*ix-0), g1_jb+(2*jx-0), g_k)
+        +field[g+1](g1_ib+(2*ix-1), g1_jb+(2*jx-1), g_k)
+        )/3.0;
+    }
+    else
+    {
+      field[g+1](g1_ib+(2*ix-0), g1_jb+(2*jx-1), g_k) = 
+        (field[g+1](g1_ib+(2*ix-0), g1_jb+(2*jx-2), g_k)
+        +field[g+1](g1_ib+(2*ix-0), g1_jb+(2*jx-0), g_k)
+        +field[g+1](g1_ib+(2*ix+1), g1_jb+(2*jx-1), g_k)
+        +field[g+1](g1_ib+(2*ix-1), g1_jb+(2*jx-1), g_k)
+        )/4.0;
+    }
+  }
+}
+
+//-----------------------------------------------------------------------
+void EW::processInterfaceEQL(vector<Sarray>& field)
+{
+  // Each grid interacts with the grid at the interface above it, 
+  // the top-most grid does not need to do anything
+  for( int g = 0 ; g < mNumberOfGrids-1; g++)
+  {
+    // Get the grid spacings
+    float_sw4 thisGrid_h = mGridSize[g];
+    float_sw4 aboveGrid_h = mGridSize[g+1];
+
+    // First, set the interface points and ghost points on grid g
+    // to be the values on grid g+1 (which is either equal in
+    // discretization or finer, so it overrides)
+    int ni=m_iEndInt[g]-m_iStartInt[g]+1, nj=m_jEndInt[g]-m_jStartInt[g]+1;
+    int g0_ib=m_iStartInt[g], g0_jb=m_jStartInt[g], g1_ib=m_iStartInt[g+1], g1_jb=m_jStartInt[g+1];
+    int g0_k=m_kStartInt[g], g1_k=m_kEndInt[g+1];
+    for( int kx = 0; kx <= m_ghost_points; kx++)
+    for( int jx = 0; jx <= nj; jx++ )
+    for( int ix = 0; ix <= ni; ix++ )
+    {
+      // Aka if this is interface between a cartesian and curvilinear grid
+      if (thisGrid_h == aboveGrid_h)
+      {
+        field[g](g0_ib+ix, g0_jb+jx, g0_k-kx) = field[g+1](g1_ib+ix, g1_jb+jx, g1_k-kx);
+      }
+      else // aboveGrid_h = 1/2 * thisGrid_h
+      {
+        field[g](g0_ib+ix, g0_jb+jx, g0_k-kx) = field[g+1](g1_ib+(2*ix), g1_jb+(2*jx), g1_k-(2*kx));
+      }
+    }
+
+    // Second, vertically interpolate the points on grid g near the interface
+    // to smooth out the transition just a little bit
+    vector<float_sw4> tmps;
+    tmps.resize(6);
+    for( int jx = 0; jx <= nj; jx++ )
+    for( int ix = 0; ix <= ni; ix++ )
+    {
+      // Calculate all the averaged values first
+      for( int kx = 1; kx <= 6; kx++)
+      {
+        // There will always be min. two ghost points
+        tmps[kx-1] = (field[g](g0_ib+ix, g0_jb+jx, g0_k+kx-3)
+                      +field[g](g0_ib+ix, g0_jb+jx, g0_k+kx-2)
+                      +field[g](g0_ib+ix, g0_jb+jx, g0_k+kx-1)
+                      +field[g](g0_ib+ix, g0_jb+jx, g0_k+kx)
+                      +field[g](g0_ib+ix, g0_jb+jx, g0_k+kx+1)
+                      +field[g](g0_ib+ix, g0_jb+jx, g0_k+kx+2)
+                      +field[g](g0_ib+ix, g0_jb+jx, g0_k+kx+3)
+                     )/7.0;
+      }
+      // Then set them
+      for( int kx = 1; kx <= 6; kx++)
+        field[g](g0_ib+ix, g0_jb+jx, g0_k+kx) = tmps[kx-1];
+    }
+
+    // // Third, set the finer mesh ghost points equal to the coarser mesh
+    // // points where they overlap (in layer 2)
+    // for( int jx = 0; jx < nj; jx++ )
+    // for( int ix = 0; ix < ni; ix++ )
+    // {
+    //   // If this is interface between a cartesian and curvilinear grid
+    //   // and the grid spacing is the 'same'
+    //   if (thisGrid_h == aboveGrid_h)
+    //   {
+    //     field[g+1](g1_ib+ix, g1_jb+jx, g1_k+1) = field[g](g0_ib+ix, g0_jb+jx, g0_k+1);
+    //     field[g+1](g1_ib+ix, g1_jb+jx, g1_k+2) = field[g](g0_ib+ix, g0_jb+jx, g0_k+2);
+    //   }
+    //   else // aboveGrid_h = 1/2 * thisGrid_h
+    //   {
+    //     field[g+1](g1_ib+(2*ix), g1_jb+(2*jx), g1_k+2) = field[g](g0_ib+ix, g0_jb+jx, g0_k+1);
+    //   }
+    // }
+
+    // // Only need to do this if the two grid discretizations are different
+    // // aka, aboveGrid_h = 1/2 * thisGrid_h
+    // if (thisGrid_h != aboveGrid_h)
+    // {
+    //   // Fourth, interpolate between fine mesh ghost points in layer 2 of the ghost points.
+    //   interpolateEQL(field, g, g1_k+2);
+
+    //   // Fifth, vertically interpolate the first layer of ghost points
+    //   ni=m_iEndIntEQL[g+1]-m_iStartIntEQL[g+1]+1; // nj and ni are now for the finer mesh
+    //   nj=m_jEndIntEQL[g+1]-m_jStartIntEQL[g+1]+1;
+    //   for( int jx = 0; jx < nj; jx++ )
+    //   for( int ix = 0; ix < ni; ix++ )
+    //   {
+    //       field[g+1](g1_ib+ix, g1_jb+jx, g1_k+1) 
+    //         = (field[g+1](g1_ib+ix, g1_jb+jx, g1_k+0) 
+    //           +field[g+1](g1_ib+ix, g1_jb+jx, g1_k+2) ) / 2.0;
+    //   }
+    // }
+
+    // // Lastly, vertically interpolate the points on grid g+1 near the interface
+    // // to smooth out the transition just a little bit
+    // for( int jx = 0; jx < nj; jx++ ) // nj and ni are now for the finer mesh
+    // for( int ix = 0; ix < ni; ix++ )
+    // {
+    //   // Calculate all the averaged values first
+    //   for( int kx = 1; kx <= 6; kx++)
+    //   {
+    //     // There will always be min. two ghost points
+    //     tmps[kx-1] = (field[g+1](g1_ib+ix, g1_jb+jx, g1_k-kx+3)
+    //                   +field[g+1](g1_ib+ix, g1_jb+jx, g1_k-kx+2)
+    //                   +field[g+1](g1_ib+ix, g1_jb+jx, g1_k-kx+1)
+    //                   +field[g+1](g1_ib+ix, g1_jb+jx, g1_k-kx)
+    //                   +field[g+1](g1_ib+ix, g1_jb+jx, g1_k-kx-1)
+    //                   +field[g+1](g1_ib+ix, g1_jb+jx, g1_k-kx-2)
+    //                   +field[g+1](g1_ib+ix, g1_jb+jx, g1_k-kx-3)
+    //                  )/7.0;
+    //   }
+    //   // Then set them
+    //   for( int kx = 1; kx <= 6; kx++)
+    //     field[g+1](g1_ib+ix, g1_jb+jx, g1_k-kx) = tmps[kx-1];
+    // }
+  }
+}
+
+//-----------------------------------------------------------------------
+void EW::extrapolateInXY_EQL( vector<Sarray>& field )
+{
+   for( int g= 0; g < mNumberOfGrids ; g++ )
+   {
+    // Extrapolate in i
+    #pragma omp parallel for
+    for( int k=m_kStart[g] ; k <= m_kEnd[g] ; k++ )
+    for( int j=m_jStart[g] ; j <= m_jEnd[g] ; j++ )
+    for( int i=m_iStart[g] ; i < m_iStartIntEQL[g] ; i++ )
+    {
+      if( field[g](i,j,k) == -1 )
+        field[g](i,j,k) = field[g](m_iStartIntEQL[g],j,k);
+    }
+    #pragma omp parallel for
+    for( int k=m_kStart[g] ; k <= m_kEnd[g] ; k++ )
+    for( int j=m_jStart[g] ; j <= m_jEnd[g] ; j++ )
+    for( int i=m_iEndInt[g]+1 ; i <= m_iEnd[g] ; i++ )
+    {
+      if( field[g](i,j,k) == -1 )
+        field[g](i,j,k) = field[g](m_iEndInt[g],j,k);
+    }
+
+    //Extrapolate in j
+    #pragma omp parallel for
+    for( int k=m_kStart[g] ; k <= m_kEnd[g] ; k++ )
+    for( int j=m_jStart[g] ; j < m_jStartIntEQL[g] ; j++ )
+    for( int i=m_iStart[g] ; i <= m_iEnd[g] ; i++ )
+    {
+      if( field[g](i,j,k) == -1 )
+        field[g](i,j,k) = field[g](i,m_jStartIntEQL[g],k);
+    }
+    #pragma omp parallel for
+    for( int k=m_kStart[g] ; k <= m_kEnd[g] ; k++ )
+    for( int j=m_jEndInt[g]+1 ; j <= m_jEnd[g] ; j++ )
+    for( int i=m_iStart[g] ; i <= m_iEnd[g] ; i++ )
+    {
+      if( field[g](i,j,k) == -1 )
+        field[g](i,j,k) = field[g](i,m_jEndInt[g],k);
+    }
+   } // end for g
+}
 
 //-----------------------------------------------------------------------
 void EW::check_materials_EQL()
@@ -1060,167 +1418,13 @@ float_sw4 EW::localMaxVpOverVs_EQL()
 // 
 // 
 //---------------------------------------------------------------
-void EW::extrapolateEQL(int g)
+bool EW::updateEmax(vector<Sarray> &U)
 {
-  // Extrapolate to above
-  extrapolateInZ(g, mMu[g], true, false );
-  extrapolateInZ(g, mQs[g], true, false );
-  extrapolateInZ(g, mQp[g], true, false );
-  
-  // Extrapolate to below
-  extrapolateInZ(g, mMu[g], false, true );
-  extrapolateInZ(g, mQs[g], false, true );
-  extrapolateInZ(g, mQp[g], false, true );
-
-  // Extrapolate material properties to mesh refinement boundaries (e.g. for doing the LOH cases more accurately)
-  if (!mQuiet && proc_zero() && mVerbose>=3)
-  {
-    printf("setMaterials> mMaterialExtrapolate = %i, mNumberOfCartesianGrids=%i, mNumberOfGrids=%i\n",
-      mMaterialExtrapolate, mNumberOfCartesianGrids, mNumberOfGrids);
-  }
-    
-  if (mMaterialExtrapolate > 0 && mNumberOfCartesianGrids > 1)
-  {
-    int kFrom;
-    if (g < mNumberOfCartesianGrids-1) // extrapolate to top
-    {
-      kFrom = m_kStartInt[g]+mMaterialExtrapolate;
-
-      if (!mQuiet && proc_zero() && mVerbose>=3)
-        printf("setMaterials> top extrapol, g=%i, kFrom=%d, kStart=%d, kStartInt=%d\n", g, kFrom, m_kStart[g], m_kStartInt[g]);
-
-      for (int k = m_kStart[g]; k < kFrom; ++k)
-      #pragma omp parallel for
-      for (int j = m_jStart[g]; j <= m_jEnd[g]; j++)
-      for (int i = m_iStart[g]; i <= m_iEnd[g]; i++)
-      {
-        mQs[g](i,j,k) = mQs[g](i,j,kFrom);
-        mQp[g](i,j,k) = mQp[g](i,j,kFrom);
-        mMu[g](i,j,k) = mMu[g](i,j,kFrom);
-      } 
-    } // end extrapolate to top
-
-    if (g > 0) // extrapolate to bottom
-    {
-      kFrom = m_kEndInt[g]-mMaterialExtrapolate;
-
-      if (!mQuiet && proc_zero() && mVerbose>=3)
-        printf("setMaterials> bottom extrapol, g=%i, kFrom=%i, kEnd=%d, kEndInt=%d\n", g, kFrom, m_kEnd[g], m_kEndInt[g]);
-
-      for (int k = kFrom+1; k <= m_kEnd[g]; ++k)
-      #pragma omp parallel for
-      for (int j = m_jStart[g]; j <= m_jEnd[g]; j++)
-      for (int i = m_iStart[g]; i <= m_iEnd[g]; i++)
-      {
-        mQs[g](i,j,k) = mQs[g](i,j,kFrom);
-        mQp[g](i,j,k) = mQp[g](i,j,kFrom);
-        mMu[g](i,j,k) = mMu[g](i,j,kFrom);
-      }
-    } // end extrapolate to bottom       
-  } // end if mMaterialExtrapolate > 0 ...
-    
-  // repeat for the curvilinear grids
-  int NumberOfCurviGrids = mNumberOfGrids - mNumberOfCartesianGrids;
-
-  if (mMaterialExtrapolate > 0 && NumberOfCurviGrids > 1)
-  {
-    int kFrom;
-    if (g >= mNumberOfCartesianGrids && g < mNumberOfGrids)
-    {
-      if (g < mNumberOfGrids-1) // extrapolate to top
-      {
-        kFrom = m_kStartInt[g]+mMaterialExtrapolate;
-
-        if (!mQuiet && proc_zero() && mVerbose>=3)
-          printf("setMaterials> top extrapol, g=%i, kFrom=%d, kStart=%d, kStartInt=%d\n", g, kFrom, m_kStart[g], m_kStartInt[g]);
-
-        for (int k = m_kStart[g]; k < kFrom; ++k)
-        #pragma omp parallel for
-        for (int j = m_jStart[g]; j <= m_jEnd[g]; j++)
-        for (int i = m_iStart[g]; i <= m_iEnd[g]; i++)
-        {
-          mQs[g](i,j,k) = mQs[g](i,j,kFrom);
-          mQp[g](i,j,k) = mQp[g](i,j,kFrom);
-          mMu[g](i,j,k) = mMu[g](i,j,kFrom);
-        }
-      } // end extrapolate to top
-
-      if (g > mNumberOfCartesianGrids) // extrapolate to bottom
-      {
-        kFrom = m_kEndInt[g]-mMaterialExtrapolate;
-
-        if (!mQuiet && proc_zero() && mVerbose>=3)
-          printf("setMaterials> bottom extrapol, g=%i, kFrom=%i, kEnd=%d, kEndInt=%d\n", g, kFrom, m_kEnd[g], m_kEndInt[g]);
-
-        for (int k = kFrom+1; k <= m_kEnd[g]; ++k)
-        #pragma omp parallel for
-        for (int j = m_jStart[g]; j <= m_jEnd[g]; j++)
-        for (int i = m_iStart[g]; i <= m_iEnd[g]; i++)
-        {
-          mQs[g](i,j,k) = mQs[g](i,j,kFrom);
-          mQp[g](i,j,k) = mQp[g](i,j,kFrom);
-          mMu[g](i,j,k) = mMu[g](i,j,kFrom);
-        }
-      } // end extrapolate to bottom
-    } // end for g      
-  } // end if mMaterialExtrapolate > 0 and NumberOfCurviGrids > 1
-    
-  // Extrapolate to ghost points in x and y, if they were not set by the previous routines.
-  extrapolateInXYEQL(mMu, g);
-  extrapolateInXYEQL(mQs, g);
-  extrapolateInXYEQL(mQp, g);
-}
-
-//---------------------------------------------------------------
-// 
-// 
-//---------------------------------------------------------------
-void EW::extrapolateInXYEQL( vector<Sarray>& field, int g )
-{
-  if( m_iStartInt[g] == 1 )
-    #pragma omp parallel for
-    for( int k=m_kStart[g] ; k <= m_kEnd[g] ; k++ )
-    for( int j=m_jStart[g] ; j <= m_jEnd[g] ; j++ )
-    for( int i=m_iStart[g] ; i < 1 ; i++ )
-      if( field[g](i,j,k) == -1 )
-        field[g](i,j,k) = field[g](1,j,k);
-
-  if( m_iEndInt[g] == m_global_nx[g] )
-    #pragma omp parallel for
-    for( int k=m_kStart[g] ; k <= m_kEnd[g] ; k++ )
-    for( int j=m_jStart[g] ; j <= m_jEnd[g] ; j++ )
-    for( int i=m_iEndInt[g]+1 ; i <= m_iEnd[g] ; i++ )
-      if( field[g](i,j,k) == -1 )
-        field[g](i,j,k) = field[g](m_iEndInt[g],j,k);
-
-  if( m_jStartInt[g] == 1 )
-    #pragma omp parallel for
-    for( int k=m_kStart[g] ; k <= m_kEnd[g] ; k++ )
-    for( int j=m_jStart[g] ; j < 1 ; j++ )
-    for( int i=m_iStart[g] ; i <= m_iEnd[g] ; i++ )
-      if( field[g](i,j,k) == -1 )
-        field[g](i,j,k) = field[g](i,1,k);
-
-  if( m_jEndInt[g] == m_global_ny[g] )
-    #pragma omp parallel for
-    for( int k=m_kStart[g] ; k <= m_kEnd[g] ; k++ )
-    for( int j=m_jEndInt[g]+1 ; j <= m_jEnd[g] ; j++ )
-    for( int i=m_iStart[g] ; i <= m_iEnd[g] ; i++ )
-      if( field[g](i,j,k) == -1 )
-        field[g](i,j,k) = field[g](i,m_jEndInt[g],k);
-}
-
-
-
-
-//---------------------------------------------------------------
-// 
-// 
-//---------------------------------------------------------------
-void EW::updateEmax(vector<Sarray> &U)
-{
+  int supergrid_pts;
+  bool updated = false;
   for( int g = 0 ; g < mNumberOfGrids; g++)
   {
+    supergrid_pts = static_cast<int>(m_supergrid_width/mGridSize[g]);
     #pragma omp parallel for     
     for( int k = m_kStartIntEQL[g] ; k <= m_kEndIntEQL[g]; k++ )
     {
@@ -1228,19 +1432,28 @@ void EW::updateEmax(vector<Sarray> &U)
       {
         for( int i = m_iStartIntEQL[g] ; i <= m_iEndIntEQL[g] ; i++ )
         {
+          float_sw4 x, y, z;
+          float_sw4 ptDepth;
           float_sw4 vs = sqrt(mMuOrig_EQL[g](i, j, k)/mRho[g](i, j, k));
+          getCoordinates(i, j, k, g, x, y, z);
+          getDepth(x, y, z, ptDepth); // Gets total depth below free surface including topography
 
-          // if the shear wave velocity is greater than vslim, don't apply
-          if (vs > m_vslim_eql || m_min_dist_to_srcs[g](i,j,k) < m_src_Dmin)
+          // if the shear wave velocity is greater than vslim,
+          // or if too close to the source,
+          // or if depth below the set limit,
+          // or if its a supergrid point
+          // then don't apply eql (aka, set max strain = 0)
+          if ( (vs > m_vslim_eql) ||
+               (ptDepth > m_max_depth_eql) ||
+               (z > m_max_z_eql) ||
+               (m_min_dist_to_srcs[g](i,j,k) < m_src_Dmin) ||
+               (i <= supergrid_pts) ||
+               (i >= m_global_nx[g]-supergrid_pts) ||
+               (j <= supergrid_pts) ||
+               (j >= m_global_ny[g]-supergrid_pts) ||
+               (g == 0 && z >= m_global_nz[g]-supergrid_pts)
+             )
           { 
-            // Debugging
-            //if ((i == 252) && (j == 106) && (k == 280))
-            //{
-            //  cout << "i" << i << " j" << j << " k" << k << endl;
-            //  cout << "x" << x << " y" << y << " z" << z << endl;
-            //  cout << "xmin" << m_src_xmin - src_buffer << endl;
-            //  cout << "xmax" << m_src_xmax + src_buffer << endl;
-            //}
             mEmax[g](i, j, k) = 0.0;
           }
           else
@@ -1278,9 +1491,15 @@ void EW::updateEmax(vector<Sarray> &U)
               float_sw4 J2_est = sqrt(4*J2);
 
               if (m_iterLim_EQL != 0)
-                  mEmax[g](i, j, k) = max(J2_est, mEmax[g](i, j, k));
-              else
+              {
+                if (J2_est > mEmax[g](i, j, k))
+                {
                   mEmax[g](i, j, k) = J2_est;
+                  updated = true;
+                }
+              }
+              else
+                mEmax[g](i, j, k) = J2_est;
             }
             else // must be curvilinear
             {
@@ -1329,9 +1548,15 @@ void EW::updateEmax(vector<Sarray> &U)
               float_sw4 J2_est = sqrt(4*J2);
 
               if (m_iterLim_EQL != 0)
-                  mEmax[g](i, j, k) = max(J2_est, mEmax[g](i, j, k));
-              else
+              {
+                if (J2_est > mEmax[g](i, j, k))
+                {
                   mEmax[g](i, j, k) = J2_est;
+                  updated = true;
+                }
+              }
+              else
+                mEmax[g](i, j, k) = J2_est;
             }
           }
         }
@@ -1339,4 +1564,5 @@ void EW::updateEmax(vector<Sarray> &U)
     }
     communicate_array( mEmax[g], g );
   } // end for all grids
+  return updated;
 } // end updateEmax

@@ -1048,24 +1048,6 @@ void EW::set_materials()
     //     extrapolateInZ(mQp[g], false, 0., linearExtrapolation); 
     //   }
 
-    if( m_use_EQL )
-    {
-      for (int g=0; g<mNumberOfGrids; g++)
-      #pragma omp parallel for
-      for (int k = m_kStart[g]; k <= m_kEnd[g]; k++ )
-      for (int j = m_jStart[g]; j <= m_jEnd[g]; j++ )
-      for (int i = m_iStart[g]; i <= m_iEnd[g]; i++ )
-      {
-        // Save the un-extrapolated versions so they can
-        // be used to populate future iterations for
-        // re-extrapolation
-        mQsOrig_EQL[g](i,j,k) = mQs[g](i, j, k);
-
-        // mMu[g] at this point is actually still Vs
-        mMuOrig_EQL[g](i,j,k) = mRho[g](i,j,k)*mMu[g](i,j,k)*mMu[g](i,j,k);
-      }
-    }
-
     // extrapolate to define material properties above the free surface (topography)
     g = mNumberOfGrids-1;
     extrapolateInZ( g, mRho[g],    true, false ); 
@@ -1319,6 +1301,20 @@ void EW::set_materials()
     }
 
     convert_material_to_mulambda( );
+
+    if( m_use_EQL )
+    {
+      for (int g=0; g<mNumberOfGrids; g++)
+      #pragma omp parallel for
+      for (int k = m_kStart[g]; k <= m_kEnd[g]; k++ )
+      for (int j = m_jStart[g]; j <= m_jEnd[g]; j++ )
+      for (int i = m_iStart[g]; i <= m_iEnd[g]; i++ )
+      {
+        // Save the original versions to use in future
+        mQsOrig_EQL[g](i,j,k) = mQs[g](i,j,k);
+        mMuOrig_EQL[g](i,j,k) = mMu[g](i,j,k);
+      }
+    }
     
     check_for_nan( mMu, 1,"mu ");       
     check_for_nan( mLambda, 1,"lambda ");       

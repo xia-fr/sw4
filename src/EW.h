@@ -1363,12 +1363,14 @@ void calculateEQLUpdate(vector<Source*> & a_Sources);
 float_sw4 calculateDarendeli(int i, int j, int k, int g, vector<Source*> & a_Sources);
 void getCoordinates(int i, int j, int k, int g, float_sw4 &x, float_sw4 &y, float_sw4 &z);
 void calcEQLDispl(vector<Sarray> &U);
-void extrapolateEQL(int g);
-void extrapolateInXYEQL( vector<Sarray>& field, int g );
-void updateEmax(vector<Sarray> &U);
-void updateEmax(vector<Sarray*> &U);
-
+bool updateEmax(vector<Sarray> &U);
+bool updateEmax(vector<Sarray*> &U);
+void processInterfaceEQL( vector<Sarray>& field );
+void preprocessInterfaceEQL(vector<Sarray>& field);
+void interpolateEQL(vector<Sarray>& field, int g, int g_k);
+void extrapolateInXY_EQL( vector<Sarray>& field );
 void check_materials_EQL();
+
 float_sw4 localMax_EQL(std::vector<Sarray> & a_field);
 float_sw4 localMin_EQL(std::vector<Sarray> & a_field);
 float_sw4 localMinVp_EQL();
@@ -1568,6 +1570,7 @@ bool m_conv_EQL;
 int m_iterLim_EQL;
 int m_iter_EQL;
 int m_srctype_EQL;
+int m_recent_updated_timestep_eql;
 
 vector<float_sw4> m_vsConv_EQL; // holds largest % change in vs for nodes in vs bins
 vector<float_sw4> m_vsBins_EQL; // bin boundaries for vs convergence criteria
@@ -1579,6 +1582,8 @@ float_sw4 m_convPercent_EQL; // convergence criteria for EQL
 vector<Sarray> m_min_dist_to_srcs;
 float_sw4 m_src_Dmin;
 float_sw4 m_vslim_eql;
+float_sw4 m_max_depth_eql;
+float_sw4 m_max_z_eql;
 
 vector<int> m_iStartIntEQL, m_iEndIntEQL, m_jStartIntEQL, m_jEndIntEQL, m_kStartIntEQL, m_kEndIntEQL; 
 // end eql variables

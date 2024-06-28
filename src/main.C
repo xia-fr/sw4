@@ -249,12 +249,7 @@ main(int argc, char **argv)
             ucorr_saved, false, 0, 0, 0, ph );
 
           // Update equivalent linear material properties
-          #if USE_HDF5 
-          #else
-            if (myRank == 0) cout << "Reversing viscoelastic..." << endl;
-            simulation.reverse_setup_viscoelastic();
-          #endif
-
+          //simulation.reverse_setup_viscoelastic(); // not needed because eql update uses orig arrays
           simulation.calculateEQLUpdate(GlobalSources[0]);
           simulation.setup_viscoelastic(); // calculates VE mu and lambda with updated qs&qp
           // preprocess sources in future for the sources that need correction by mu?

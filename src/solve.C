@@ -536,15 +536,13 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
   }
 
 // save any images for cycle = 0 (initial data), or beginCycle-1 (checkpoint restart)
-if ( (m_use_EQL && m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only record on converged iteration
+if ( (m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only record on converged iteration
   {
-    //if (m_use_EQL)
-    //  reverse_setup_viscoelastic();
-  update_images( beginCycle-1, t, U, Um, Up, a_Rho, a_Mu, a_Lambda, a_Sources, 1 );
-    //if (m_use_EQL)
-    //  setup_viscoelastic();
-  for( int i3 = 0 ; i3 < mImage3DFiles.size() ; i3++ )
-    mImage3DFiles[i3]->update_image( beginCycle-1, t, mDt, U, a_Rho, a_Mu, a_Lambda, a_Rho, a_Mu, a_Lambda, mQp, mQs, mPath[eglobal], mZ );
+    reverse_setup_viscoelastic();
+    update_images( beginCycle-1, t, U, Um, Up, a_Rho, a_Mu, a_Lambda, a_Sources, 1 );
+    for( int i3 = 0 ; i3 < mImage3DFiles.size() ; i3++ )
+      mImage3DFiles[i3]->update_image( beginCycle-1, t, mDt, U, a_Rho, a_Mu, a_Lambda, a_Rho, a_Mu, a_Lambda, mQp, mQs, mPath[eglobal], mZ );
+    setup_viscoelastic();
   }
   int gg = mNumberOfGrids-1; // top grid
   for( int i3 = 0 ; i3 < mESSI3DFiles.size() ; i3++ ) {
@@ -968,35 +966,45 @@ if ( (m_use_EQL && m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only reco
 
   // calculate max strain tracking update for equivalent linear method
   if ( m_use_EQL ) 
-  {
-    /*
-    if (m_myRank == 0)
-      cout << endl << "tstep: " << currentTimeStep << endl;
-    */
-    
-    // If using time variant EQL, reset strain tracking
-    // at every time step (so prev. strains don't mess with current time step)
-    if (m_iterLim_EQL == 0 && m_iter_EQL == 0 && m_conv_EQL)
-      for( int g = 0 ; g < mNumberOfGrids; g++)
-        mEmax[g].set_to_zero();
+  { 
+   //  // If using time variant EQL, reset strain tracking
+   //  // at every time step (so prev. strains don't mess with current time step)
+   //  if (m_iterLim_EQL == 0 && m_iter_EQL == 0 && m_conv_EQL)
+   //    for( int g = 0 ; g < mNumberOfGrids; g++)
+   //      mEmax[g].set_to_zero();
 
+   //  int updatedTs;
+    bool updated = false;
     if (m_srctype_EQL > 0) // if Up is velocity or acceleration
     {
       calcEQLDispl(Up);
-      updateEmax(U_EQL);
+      updated = updateEmax(U_EQL);
     }
     else // if source type is displ, i.e. Up is displacement
     {
-      updateEmax(Up);
+      updated = updateEmax(Up);
     }
 
-    // If using time variant EQL, update properties at every time step
-    if (m_iterLim_EQL == 0 && m_iter_EQL == 0 && m_conv_EQL)
-    {
-      reverse_setup_viscoelastic();
-      calculateEQLUpdate(a_Sources);
-      setup_viscoelastic();
-    }
+   //  if (updated)
+   //    updatedTs = currentTimeStep;
+   //  else
+   //    updatedTs = m_recent_updated_timestep_eql;
+
+    // Gather results from all processors
+   //  MPI_Allreduce(&updatedTs,&m_recent_updated_timestep_eql,1,MPI_INT,MPI_MAX,m_cartesian_communicator);
+   //  if (proc_zero())
+   //  {
+   //    printf("Time step of strain updated somewhere in model: %7i\n", m_recent_updated_timestep_eql);
+   //    fflush(stdout);
+   //  }
+    
+   //  // If using time variant EQL, update properties at every time step
+   //  if (m_iterLim_EQL == 0 && m_iter_EQL == 0 && m_conv_EQL)
+   //  {
+   //    reverse_setup_viscoelastic();
+   //    calculateEQLUpdate(a_Sources);
+   //    setup_viscoelastic();
+   //  }
   }
 
 // Images have to be written before the solution arrays are cycled, because both Up and Um are needed
@@ -1004,12 +1012,12 @@ if ( (m_use_EQL && m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only reco
 //
 // AP: Note to self: Any quantity related to velocities will be lagged by one time step
 //
-   if ( (m_use_EQL && m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only record on converged iteration
+   if ( (m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only record on converged iteration
   {
-    //if (m_use_EQL)
+    //if (m_conv_EQ)
     //  reverse_setup_viscoelastic();
     update_images( currentTimeStep, t, Up, U, Um, a_Rho, a_Mu, a_Lambda, a_Sources, currentTimeStep == mNumberOfTimeSteps[event] );
-    //if (m_use_EQL)
+    //if (m_conv_EQ)
     //  setup_viscoelastic();
     for( int i3 = 0 ; i3 < mImage3DFiles.size() ; i3++ )
       mImage3DFiles[i3]->update_image( currentTimeStep, t, mDt, Up, a_Rho, a_Mu, a_Lambda, a_Rho, a_Mu, a_Lambda, 
@@ -1019,7 +1027,7 @@ if ( (m_use_EQL && m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only reco
     // Update the ESSI hdf5 data
     double time_essi_tmp=MPI_Wtime();
     gg = mNumberOfGrids-1; // top grid
-    if ( (m_use_EQL && m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only record on converged iteration
+    if ( (m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only record on converged iteration
   {
     for( int i3 = 0 ; i3 < mESSI3DFiles.size() ; i3++ )
       mESSI3DFiles[i3]->update_image( currentTimeStep, t, mDt, Up, mPath[eglobal], mZ[gg] ); // not verified for several cuvilinear grids
@@ -1028,7 +1036,7 @@ if ( (m_use_EQL && m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only reco
 
 // save the current solution on receiver records (time-derivative require Up and Um for a 2nd order
 // approximation, so do this before cycling the arrays)
-   if ( (m_use_EQL && m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only record on converged iteration
+   if ( (m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only record on converged iteration
    {
     for (int ts=0; ts<a_TimeSeries.size(); ts++)
     {
@@ -1118,6 +1126,22 @@ if ( (m_use_EQL && m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only reco
 // output time, Linf-err, Linf-sol-err
 	fprintf(lf, "%e %15.7e %15.7e %15.7e\n", t, errInf, errL2, solInf);
     }
+
+   //  // EQL check for end of time stepping in this iteration
+   //  if (m_use_EQL)
+   //  {
+   //    int endStepDiff = mNumberOfTimeSteps[event]/100.0 * 10;
+   //    if (currentTimeStep - m_recent_updated_timestep_eql > endStepDiff)
+   //    {
+   //      if ( proc_zero() )
+   //      {
+   //        printf("%7i time steps since max strain was updated, ending time stepping... \n", 
+   //                currentTimeStep - m_recent_updated_timestep_eql);
+   //        fflush(stdout);
+   //      }
+   //      currentTimeStep = mNumberOfTimeSteps[event]+1;
+   //    }
+   //  }
 
     if( m_output_detailed_timing )
     {

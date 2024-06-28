@@ -1450,9 +1450,6 @@ void EW::processEQL(char* buffer)
   m_use_EQL = true;
   m_convPercent_EQL = 5.0;
 
-  // EQLTODO: functionality for custom depth to apply method to
-  // EQLTODO: require user to define a global min. vs?
-
   while (token != NULL)
   {
     // while there are tokens in the string still
@@ -1477,15 +1474,25 @@ void EW::processEQL(char* buffer)
       CHECK_INPUT(m_srctype_EQL > -1, 
       "ERROR: Source type must be displacement, velocity, or acceleration, not " << token);
     }
-    else if (startswith("srcdist=", token) )
+    else if (startswith("srcdistlim=", token) )
     {
-      token += 8; // skip srcdist=
+      token += 11; // skip srcdist=
       m_src_Dmin = atof(token);
     }
     else if (startswith("vslim=", token) )
     {
       token += 6; // skip srcdist=
       m_vslim_eql = atof(token);
+    }
+    else if (startswith("depthlim=", token) )
+    {
+      token += 9; // skip depthlim=
+      m_max_depth_eql = atof(token);
+    }
+    else if (startswith("zlim=", token) )
+    {
+      token += 5; // skip zlim=
+      m_max_z_eql = atof(token);
     }
     else if (startswith("conv=", token) )
     {
@@ -4928,8 +4935,8 @@ void EW::allocateCartesianSolverArrays(float_sw4 a_global_zmax)
         m_iEndIntEQL[g] = m_iEndInt[g];
         m_jStartIntEQL[g] = m_jStartInt[g];
         m_jEndIntEQL[g] = m_jEndInt[g];
-        m_kStartIntEQL[g] = m_kStart[g]+1; //m_kStartInt[g];
-        m_kEndIntEQL[g] = m_kEnd[g]-1; //m_kEndInt[g];
+        m_kStartIntEQL[g] = m_kStartInt[g];
+        m_kEndIntEQL[g] = m_kEndInt[g];
 
         // Set up vs bin boundaries for convergence criteria
         m_vsBins_EQL.resize(3);
