@@ -222,15 +222,16 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
 
 // Set the number of time steps, allocate the recording arrays, and set reference time in all time series objects  
 /* #pragma omp parallel for */
-  for (int ts=0; ts<a_TimeSeries.size(); ts++)
-  {
-     a_TimeSeries[ts]->allocateRecordingArrays( mNumberOfTimeSteps[event]+1, mTstart, mDt); // AP: added one to mNumber...
-          
-// In forward solve, the output receivers will use the same UTC as the
-     // global reference utc0, therefore, set station utc equal reference utc.
-     //     if( m_utc0set )
-     //	a_TimeSeries[ts]->set_station_utc( m_utc0 );
-  }
+   for (int ts=0; ts<a_TimeSeries.size(); ts++)
+   {
+      a_TimeSeries[ts]->allocateRecordingArrays( mNumberOfTimeSteps[event]+1, mTstart, mDt); // AP: added one to mNumber...
+            
+   // In forward solve, the output receivers will use the same UTC as the
+      // global reference utc0, therefore, set station utc equal reference utc.
+      //     if( m_utc0set )
+      //	a_TimeSeries[ts]->set_station_utc( m_utc0 );
+   }
+  
   if( !mQuiet && mVerbose >=3 && proc_zero() )
     printf("***  Allocated all receiver time series\n");
 
@@ -515,6 +516,8 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
   }
 #endif
 
+   if ( (m_use_EQL && m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only record on converged iteration
+  {
   for (int ts=0; ts<a_TimeSeries.size(); ts++)
   {
 // can't compute a 2nd order accurate time derivative at this point
@@ -530,12 +533,17 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
       a_TimeSeries[ts]->recordData(uRec);
     }
   }
+  }
 
 // save any images for cycle = 0 (initial data), or beginCycle-1 (checkpoint restart)
-  update_images( beginCycle-1, t, U, Um, Up, a_Rho, a_Mu, a_Lambda, a_Sources, 1 );
-  for( int i3 = 0 ; i3 < mImage3DFiles.size() ; i3++ )
-    mImage3DFiles[i3]->update_image( beginCycle-1, t, mDt, U, a_Rho, a_Mu, a_Lambda, a_Rho, a_Mu, a_Lambda, mQp, mQs, mPath[eglobal], mZ );
-
+if ( (m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only record on converged iteration
+  {
+    reverse_setup_viscoelastic();
+    update_images( beginCycle-1, t, U, Um, Up, a_Rho, a_Mu, a_Lambda, a_Sources, 1 );
+    for( int i3 = 0 ; i3 < mImage3DFiles.size() ; i3++ )
+      mImage3DFiles[i3]->update_image( beginCycle-1, t, mDt, U, a_Rho, a_Mu, a_Lambda, a_Rho, a_Mu, a_Lambda, mQp, mQs, mPath[eglobal], mZ );
+    setup_viscoelastic();
+  }
   int gg = mNumberOfGrids-1; // top grid
   for( int i3 = 0 ; i3 < mESSI3DFiles.size() ; i3++ ) {
     mESSI3DFiles[i3]->set_ntimestep(mNumberOfTimeSteps[event]);
@@ -956,25 +964,75 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
     printTime( currentTimeStep, t, currentTimeStep == mNumberOfTimeSteps[event] ); 
     //    printTime( currentTimeStep, t, true ); 
 
+  // calculate max strain tracking update for equivalent linear method
+  if ( m_use_EQL ) 
+  { 
+   //  // If using time variant EQL, reset strain tracking
+   //  // at every time step (so prev. strains don't mess with current time step)
+   //  if (m_iterLim_EQL == 0 && m_iter_EQL == 0 && m_conv_EQL)
+   //    for( int g = 0 ; g < mNumberOfGrids; g++)
+   //      mEmax[g].set_to_zero();
+
+    long long int updated = 0;
+    if (m_srctype_EQL > 0) // if Up is velocity or acceleration
+    {
+      calcEQLDispl(Up);
+      updated = updateEmax(U_EQL);
+    }
+    else // if source type is displ, i.e. Up is displacement
+    {
+      updated = updateEmax(Up);
+    }
+
+    float_sw4 percent_updating = static_cast<float_sw4>(updated)/m_totPoints*100;
+    if (!mQuiet && proc_zero() && ((currentTimeStep % mPrintInterval) == 1 || currentTimeStep == 1) ) 
+    {
+      printf("Number of grid points with updated strain: %12lld (%2.4f%%)\n", updated, percent_updating);
+      fflush(stdout);
+    }
+    int strIndex = currentTimeStep % 10;
+    m_strainUpdate_counter[strIndex] = percent_updating;
+    
+   //  // If using time variant EQL, update properties at every time step
+   //  if (m_iterLim_EQL == 0 && m_iter_EQL == 0 && m_conv_EQL)
+   //  {
+   //    reverse_setup_viscoelastic();
+   //    calculateEQLUpdate(a_Sources);
+   //    setup_viscoelastic();
+   //  }
+  }
+
 // Images have to be written before the solution arrays are cycled, because both Up and Um are needed
 // to compute a centered time derivative
 //
 // AP: Note to self: Any quantity related to velocities will be lagged by one time step
 //
+   if ( (m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only record on converged iteration
+  {
+    //if (m_conv_EQ)
+    //  reverse_setup_viscoelastic();
     update_images( currentTimeStep, t, Up, U, Um, a_Rho, a_Mu, a_Lambda, a_Sources, currentTimeStep == mNumberOfTimeSteps[event] );
+    //if (m_conv_EQ)
+    //  setup_viscoelastic();
     for( int i3 = 0 ; i3 < mImage3DFiles.size() ; i3++ )
       mImage3DFiles[i3]->update_image( currentTimeStep, t, mDt, Up, a_Rho, a_Mu, a_Lambda, a_Rho, a_Mu, a_Lambda, 
 				       mQp, mQs, mPath[eglobal], mZ ); // mRho, a_Mu, mLambda occur twice because we don't use gradRho etc.
+  }
 
     // Update the ESSI hdf5 data
     double time_essi_tmp=MPI_Wtime();
     gg = mNumberOfGrids-1; // top grid
+    if ( (m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only record on converged iteration
+  {
     for( int i3 = 0 ; i3 < mESSI3DFiles.size() ; i3++ )
       mESSI3DFiles[i3]->update_image( currentTimeStep, t, mDt, Up, mPath[eglobal], mZ[gg] ); // not verified for several cuvilinear grids
+  }
     double time_essi=MPI_Wtime()-time_essi_tmp;
 
 // save the current solution on receiver records (time-derivative require Up and Um for a 2nd order
 // approximation, so do this before cycling the arrays)
+   if ( (m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only record on converged iteration
+   {
     for (int ts=0; ts<a_TimeSeries.size(); ts++)
     {
       if (a_TimeSeries[ts]->myPoint())
@@ -993,7 +1051,7 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
 	a_TimeSeries[ts]->recordData(uRec);
       }
     }
-
+  }
 
 // Write check point, if requested (timeToWrite returns false if checkpointing is not used)
     if( m_check_point->timeToWrite( t, currentTimeStep, mDt ) )
@@ -1064,6 +1122,28 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
 	fprintf(lf, "%e %15.7e %15.7e %15.7e\n", t, errInf, errL2, solInf);
     }
 
+    // EQL check for end of time stepping in this iteration
+    if (m_use_EQL)
+    {
+      int minSteps = mNumberOfTimeSteps[event]/100.0 * 25; // run at least 25% of simulation minimum
+      float_sw4 avgUpdatePercent = 0.0;
+      for (int ix = 0; ix < m_strainUpdate_counter.size(); ix++)
+          avgUpdatePercent += m_strainUpdate_counter[ix];
+      avgUpdatePercent /= m_strainUpdate_counter.size();
+      if (avgUpdatePercent < 0.05 && currentTimeStep > minSteps)
+      {
+        if ( proc_zero() )
+        {
+          printf("Average update percent (%2.4f) below threshold, ending time stepping... \n", 
+                  avgUpdatePercent);
+          fflush(stdout);
+        }
+        for (int ix = 0; ix < m_strainUpdate_counter.size(); ix++)
+          m_strainUpdate_counter[ix] = 0.0;
+        currentTimeStep = mNumberOfTimeSteps[event]+1;
+      }
+    }
+
     if( m_output_detailed_timing )
     {
        time_measure[19] = MPI_Wtime();
@@ -1099,7 +1179,6 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
           time_sum[9] = 0;
        }
     }
-    
   } // end time stepping loop
 
   if ( !mQuiet && proc_zero() )

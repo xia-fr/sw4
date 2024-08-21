@@ -814,7 +814,155 @@ void EW::preprocessSources( vector<vector<Source*> > & a_GlobalUniqueSources )
 // // TODO: check that t0 is large enough even when prefilter is NOT used
           if (proc_zero())
              saveGMTFile( a_GlobalUniqueSources, e );
-       }
+
+      // If using the equivalent linear method (EQL), we need to track how close to the sources
+      // we are to avoid being too close
+      if (m_use_EQL)
+      {
+        if (!mQuiet && mVerbose >= 1 && proc_zero() )
+          printf("\nEQL: Calculating distance to sources...");
+
+        // Each processor computes the start and end (x,y) on finest grid (g = mNumberOfGrids-1)
+        float_sw4 xStart = (m_iStartInt[mNumberOfGrids-1]-1)*mGridSize[mNumberOfGrids-1];
+        float_sw4 xEnd = (m_iEndInt[mNumberOfGrids-1]-1)*mGridSize[mNumberOfGrids-1];
+        float_sw4 yStart = (m_jStartInt[mNumberOfGrids-1]-1)*mGridSize[mNumberOfGrids-1];
+        float_sw4 yEnd = (m_jEndInt[mNumberOfGrids-1]-1)*mGridSize[mNumberOfGrids-1];
+
+        // Over all the source points
+        for( int e=0 ; e < a_GlobalUniqueSources.size() ; e++ )
+        {
+          for( int s=0; s < a_GlobalUniqueSources[e].size(); s++ ) 
+          {
+            // Find the (x,y,z) coord. for this source point
+            float_sw4 sX = a_GlobalUniqueSources[e][s]->getX0();
+            float_sw4 sY = a_GlobalUniqueSources[e][s]->getY0();
+            float_sw4 sZ = a_GlobalUniqueSources[e][s]->getZ0();
+
+            // If this point is close enough to have an effect on any
+            // points in the processor's domain
+            if (
+              (sX <= xEnd+1.1*m_src_Dmin) &&
+              (sX >= xStart-1.1*m_src_Dmin) &&
+              (sY <= yEnd+1.1*m_src_Dmin) &&
+              (sY >= yStart-1.1*m_src_Dmin)
+            )
+            {
+              // // The vertical bounds within which to check the points for distance
+              // // from this source
+              // float_sw4 zStart = sZ - 1.1*m_src_Dmin;
+              // float_sw4 zEnd = sZ + 1.1*m_src_Dmin;
+
+              // // We check the grids to see if we can exclude some cartesian
+              // // grids from the search
+              // int gmax = mNumberOfGrids-1;
+              // int gmin = 0;
+              // // If the deepest point to check is in a curvilinear grid
+              // if (zEnd <= m_zmin[mNumberOfCartesianGrids-1])
+              //   gmin = mNumberOfCartesianGrids;
+              // else
+              // {
+              //   for (int g = 0; g<mNumberOfCartesianGrids; g++)
+              //   {
+              //       if (
+              //         (zEnd >= m_zmin[g]) &&
+              //         (zEnd <= m_zmin[g]+(m_kEndInt[g]-1)*mGridSize[g])
+              //       )
+              //         gmin = g;
+              //   }
+              // }
+
+              for (int g = 0; g<mNumberOfGrids; g++)
+              for (int k = m_kStartIntEQL[g]; k <= m_kEndIntEQL[g]; k++ )
+              for (int j = m_jStartIntEQL[g]; j <= m_jEndIntEQL[g]; j++ )
+              for (int i = m_iStartIntEQL[g]; i <= m_iEndIntEQL[g]; i++ )
+              {
+                // Only check if haven't found a source the point is too close to yet
+                if (m_min_dist_to_srcs[g](i,j,k) >= m_src_Dmin)
+                {
+                  float_sw4 x, y, z, minDist;
+                  getCoordinates(i, j, k, g, x, y, z);
+                  minDist = sqrt(pow(sX-x, 2)+pow(sY-y, 2)+pow(sZ-z, 2));
+                  if (minDist < m_src_Dmin)
+                  {
+                    m_min_dist_to_srcs[g](i,j,k) = minDist;
+                  }
+                }
+              }
+            }
+          } // end for source s
+        } // end for e
+
+        if (!mQuiet && mVerbose >= 1 && proc_zero() )
+          printf("\nEQL: Counting number of EQL grid points... \n");
+        int supergrid_pts;
+        long long int totptstmp = 0; // and compute total eql grid points
+        long long int eqlptstmp0 = 0; 
+        long long int eqlptstmp1 = 0;
+        long long int eqlptstmp2 = 0;
+        long long int eqlptstmp3 = 0;
+        for (int g=0; g<mNumberOfGrids; g++)
+        {
+          supergrid_pts = static_cast<int>(m_supergrid_width/mGridSize[g]);
+
+          #pragma omp parallel for reduction(+:eqlptstmp0,eqlptstmp1,eqlptstmp2,eqlptstmp3,totptstmp)
+          for (int k = m_kStartIntEQL[g]; k <= m_kEndIntEQL[g]; k++ )
+          for (int j = m_jStartIntEQL[g]; j <= m_jEndIntEQL[g]; j++ )
+          for (int i = m_iStartIntEQL[g]; i <= m_iEndIntEQL[g]; i++ )
+          {
+            float_sw4 x, y, z;
+            float_sw4 ptDepth;
+            float_sw4 vs = sqrt(mMuOrig_EQL[g][0](i, j, k)/mRho[g](i, j, k));
+            getCoordinates(i, j, k, g, x, y, z);
+            getDepth(x, y, z, ptDepth); // Gets total depth below free surface including topography
+            // If is a point in the EQL domain
+            if ( !((vs > m_vslim_eql) ||
+                  (ptDepth > m_max_depth_eql) ||
+                  (z > m_max_z_eql) ||
+                  (m_min_dist_to_srcs[g](i,j,k) < m_src_Dmin) ||
+                  (i <= supergrid_pts) ||
+                  (i >= m_global_nx[g]-supergrid_pts) ||
+                  (j <= supergrid_pts) ||
+                  (j >= m_global_ny[g]-supergrid_pts) ||
+                  (g == 0 && k >= m_global_nz[g]-supergrid_pts)
+            ))
+            { // Counts the number of grid points in each vs bin
+              if (vs < m_vsBins_EQL[0])
+              {
+                eqlptstmp0++;
+              }
+              else if (vs < m_vsBins_EQL[1])
+              {
+                eqlptstmp1++;
+              }
+              else if (vs < m_vsBins_EQL[2])
+              {
+                eqlptstmp2++;
+              }
+              else
+              {
+                eqlptstmp3++;
+              }
+              totptstmp++; // Also compute total eql grid points
+            } // end if point meets requirements to be in EQL computations
+          } // end for ijk
+        } // end for g
+        MPI_Allreduce( &eqlptstmp0, &m_eqlPoints[0], 1, MPI_LONG_LONG_INT, MPI_SUM, m_cartesian_communicator );
+        MPI_Allreduce( &eqlptstmp1, &m_eqlPoints[1], 1, MPI_LONG_LONG_INT, MPI_SUM, m_cartesian_communicator );
+        MPI_Allreduce( &eqlptstmp2, &m_eqlPoints[2], 1, MPI_LONG_LONG_INT, MPI_SUM, m_cartesian_communicator );
+        MPI_Allreduce( &eqlptstmp3, &m_eqlPoints[3], 1, MPI_LONG_LONG_INT, MPI_SUM, m_cartesian_communicator );
+        MPI_Allreduce( &totptstmp, &m_totPoints, 1, MPI_LONG_LONG_INT, MPI_SUM, m_cartesian_communicator );
+        if (!mQuiet && mVerbose >= 1 && proc_zero() )
+        {
+          printf("\nProcessed dist. (min %4.2fm) to src. for each grid point. \n", m_src_Dmin);
+          printf("Points in bin 1: %12lld\n", m_eqlPoints[0]);
+          printf("Points in bin 2: %12lld\n", m_eqlPoints[1]);
+          printf("Points in bin 3: %12lld\n", m_eqlPoints[2]);
+          printf("Points in bin 4: %12lld\n", m_eqlPoints[3]);
+          printf("  Total EQL pts: %12lld\n", m_totPoints);
+        }
+      } // end if using EQL
+
+    } // end for each epicenter
     } // end normal seismic setup
 
   } // end if ( !m_twilight_forcing && !m_energy_test && !m_rayleigh_wave_test ) 
@@ -895,96 +1043,97 @@ void EW::set_materials()
   int g;
   if( !m_testing )
   {
-// If material surfaces (Ifiles) are defined, sort them wrt their IDs
-     if(m_materials.size() > 0)
-     {
-// Sort the m_materials vector in increasing id order...but only if there are more than one element.
-	if (m_materials.size() > 1) 
-	{
-	   MaterialProperty *mp;
-	   for (int iStart=0; iStart < m_materials.size()-1; iStart++)
-	   {
-	      int idmin=m_materials[iStart]->m_materialID;
-	      for (int q=iStart+1; q<m_materials.size(); q++)
-	      {
-		 if (m_materials[q]->m_materialID < idmin)
-		 {
-// record new min value and swap elements q and iStart i m_materials vector
-		    idmin = m_materials[q]->m_materialID;
-		    mp = m_materials[q];
-		    m_materials[q] = m_materials[iStart];
-		    m_materials[iStart] = mp;
-		 } // end if
-	      } // end for q
-	   } // end for iStart
-	} // end if size > 1
+    // If material surfaces (Ifiles) are defined, sort them wrt their IDs
+    if(m_materials.size() > 0)
+    {
+      // Sort the m_materials vector in increasing id order...but only if there are more than one element.
+      if (m_materials.size() > 1) 
+      {
+        MaterialProperty *mp;
+        for (int iStart=0; iStart < m_materials.size()-1; iStart++)
+        {
+          int idmin=m_materials[iStart]->m_materialID;
+          for (int q=iStart+1; q<m_materials.size(); q++)
+          {
+            if (m_materials[q]->m_materialID < idmin)
+            {
+              // record new min value and swap elements q and iStart i m_materials vector
+              idmin = m_materials[q]->m_materialID;
+              mp = m_materials[q];
+              m_materials[q] = m_materials[iStart];
+              m_materials[iStart] = mp;
+            } // end if
+          } // end for q
+        } // end for iStart
+      } // end if size > 1
 
-// output a list of material id's
-	if (proc_zero() && mVerbose>=3)
-	{
-	   cout << "**** Material ID's: ********" << endl;
-	   for (int q=0; q<m_materials.size(); q++)
-	      cout << "Material[" << q << "]->ID=" << m_materials[q]->m_materialID << endl;
-	}
-     }
+      // output a list of material id's
+      if (proc_zero() && mVerbose>=3)
+      {
+        cout << "**** Material ID's: ********" << endl;
+        for (int q=0; q<m_materials.size(); q++)
+          cout << "Material[" << q << "]->ID=" << m_materials[q]->m_materialID << endl;
+      }
+    }
 
-// figure out if we may ignore some blocks (i.e. an efile command which is followed 
-// by a block command covering all grid points). 
+    // figure out if we may ignore some blocks (i.e. an efile command which is followed 
+    // by a block command covering all grid points). 
     int lastAllCoveringBlock=0;
     for( unsigned int b = 0 ; b < m_mtrlblocks.size() ; b++ )
-       if (m_mtrlblocks[b]->coversAllPoints())
-	  lastAllCoveringBlock=b;
+      if (m_mtrlblocks[b]->coversAllPoints())
+        lastAllCoveringBlock=b;
 
-// tmp
+    // tmp
     if (proc_zero_evzero())
     {
       if (lastAllCoveringBlock == 0)
-	cout << "Considering all material blocks" << endl;
+        cout << "Considering all material blocks" << endl;
       else
-	cout << "Only considering material blocks with index >= " << lastAllCoveringBlock << endl;
+        cout << "Only considering material blocks with index >= " << lastAllCoveringBlock << endl;
     } // end if proc_zero()
     for( unsigned int b = lastAllCoveringBlock ; b < m_mtrlblocks.size() ; b++ )
-       m_mtrlblocks[b]->set_material_properties(mRho, mMu, mLambda, mQs, mQp); 
+    {
+      m_mtrlblocks[b]->set_material_properties(mRho, mMu, mLambda, mQs, mQp); 
+    }
 
-//   bool linearExtrapolation=false;
-// note that material thresholding for vs and vp happens further down in this procedure
-//   extrapolateInZ( mRho[g],    false, 0., linearExtrapolation ); 
-//   extrapolateInZ( mLambda[g], false, 0., linearExtrapolation ); 
-//   extrapolateInZ( mMu[g],     false, 0., linearExtrapolation );
-//   if( m_use_attenuation )
-//   {
-//     extrapolateInZ(mQs[g], false, 0., linearExtrapolation); 
-//     extrapolateInZ(mQp[g], false, 0., linearExtrapolation); 
-//   }
+    //   bool linearExtrapolation=false;
+    // note that material thresholding for vs and vp happens further down in this procedure
+    //   extrapolateInZ( mRho[g],    false, 0., linearExtrapolation ); 
+    //   extrapolateInZ( mLambda[g], false, 0., linearExtrapolation ); 
+    //   extrapolateInZ( mMu[g],     false, 0., linearExtrapolation );
+    //   if( m_use_attenuation )
+    //   {
+    //     extrapolateInZ(mQs[g], false, 0., linearExtrapolation); 
+    //     extrapolateInZ(mQp[g], false, 0., linearExtrapolation); 
+    //   }
 
-// extrapolate to define material properties above the free surface (topography)
-   g = mNumberOfGrids-1;
-   extrapolateInZ( g, mRho[g],    true, false ); 
-   extrapolateInZ( g, mLambda[g], true, false ); 
-   extrapolateInZ( g, mMu[g],     true, false );
-   if( m_use_attenuation )
-   {
-      extrapolateInZ(g, mQs[g], true, false );
-      extrapolateInZ(g, mQp[g], true, false );
-   }
+    // extrapolate to define material properties above the free surface (topography)
+    g = mNumberOfGrids-1;
+    extrapolateInZ( g, mRho[g],    true, false ); 
+    extrapolateInZ( g, mLambda[g], true, false ); 
+    extrapolateInZ( g, mMu[g],     true, false );
+    if( m_use_attenuation )
+    {
+        extrapolateInZ(g, mQs[g], true, false );
+        extrapolateInZ(g, mQp[g], true, false );
+    }
 
-// Extrapolate to ghost points at bottom of domain, if necessary
-   g = 0;
-   extrapolateInZ( g, mRho[g],    false, true ); 
-   extrapolateInZ( g, mLambda[g], false, true ); 
-   extrapolateInZ( g, mMu[g],     false, true );
-   if( m_use_attenuation )
-   {
-      extrapolateInZ(g, mQs[g], false, true );
-      extrapolateInZ(g, mQp[g], false, true );
-   }
+    // Extrapolate to ghost points at bottom of domain, if necessary
+    g = 0;
+    extrapolateInZ( g, mRho[g],    false, true ); 
+    extrapolateInZ( g, mLambda[g], false, true ); 
+    extrapolateInZ( g, mMu[g],     false, true );
+    if( m_use_attenuation )
+    {
+        extrapolateInZ(g, mQs[g], false, true );
+        extrapolateInZ(g, mQp[g], false, true );
+    }
 
-
-// extrapolate material properties to mesh refinement boundaries (e.g. for doing the LOH cases more accurately)
+    // extrapolate material properties to mesh refinement boundaries (e.g. for doing the LOH cases more accurately)
     if (!mQuiet && proc_zero() && mVerbose>=3)
     {
       printf("setMaterials> mMaterialExtrapolate = %i, mNumberOfCartesianGrids=%i, mNumberOfGrids=%i\n",
-	     mMaterialExtrapolate, mNumberOfCartesianGrids, mNumberOfGrids);
+      mMaterialExtrapolate, mNumberOfCartesianGrids, mNumberOfGrids);
     }
     
     if (mMaterialExtrapolate > 0 && mNumberOfCartesianGrids > 1)
@@ -992,72 +1141,69 @@ void EW::set_materials()
       int kFrom;
       for (g=0; g<mNumberOfCartesianGrids; g++)
       {
-	if (g < mNumberOfCartesianGrids-1) // extrapolate to top
-	{
-	  kFrom = m_kStartInt[g]+mMaterialExtrapolate;
+        if (g < mNumberOfCartesianGrids-1) // extrapolate to top
+        {
+          kFrom = m_kStartInt[g]+mMaterialExtrapolate;
 
-	  if (!mQuiet && proc_zero() && mVerbose>=3)
-	    printf("setMaterials> top extrapol, g=%i, kFrom=%d, kStart=%d, kStartInt=%d\n", g, kFrom, m_kStart[g], m_kStartInt[g]);
+          if (!mQuiet && proc_zero() && mVerbose>=3)
+            printf("setMaterials> top extrapol, g=%i, kFrom=%d, kStart=%d, kStartInt=%d\n", g, kFrom, m_kStart[g], m_kStartInt[g]);
 
-	  for (int k = m_kStart[g]; k < kFrom; ++k)
-#pragma omp parallel for
-	    for (int j = m_jStart[g]; j <= m_jEnd[g]; j++)
-	      for (int i = m_iStart[g]; i <= m_iEnd[g]; i++)
-	      {
-		mRho[g](i,j,k)    = mRho[g](i,j,kFrom);
-		mMu[g](i,j,k)     = mMu[g](i,j,kFrom);
-		mLambda[g](i,j,k) = mLambda[g](i,j,kFrom);
-	      }
+          for (int k = m_kStart[g]; k < kFrom; ++k)
+          #pragma omp parallel for
+          for (int j = m_jStart[g]; j <= m_jEnd[g]; j++)
+          for (int i = m_iStart[g]; i <= m_iEnd[g]; i++)
+          {
+            mRho[g](i,j,k)    = mRho[g](i,j,kFrom);
+            mMu[g](i,j,k)     = mMu[g](i,j,kFrom);
+            mLambda[g](i,j,k) = mLambda[g](i,j,kFrom);
+          }
 
-	  if( m_use_attenuation )
-	  {
-	    for (int k = m_kStart[g]; k < kFrom; ++k)
-#pragma omp parallel for
-	      for (int j = m_jStart[g]; j <= m_jEnd[g]; j++)
-		for (int i = m_iStart[g]; i <= m_iEnd[g]; i++)
-		{
-		  mQs[g](i,j,k) = mQs[g](i,j,kFrom);
-		  mQp[g](i,j,k) = mQp[g](i,j,kFrom);
-		}
-	  }
-	  
-	} // end extrapolate to top
+          if( m_use_attenuation )
+          {
+            for (int k = m_kStart[g]; k < kFrom; ++k)
+            #pragma omp parallel for
+            for (int j = m_jStart[g]; j <= m_jEnd[g]; j++)
+            for (int i = m_iStart[g]; i <= m_iEnd[g]; i++)
+            {
+              mQs[g](i,j,k) = mQs[g](i,j,kFrom);
+              mQp[g](i,j,k) = mQp[g](i,j,kFrom);
+            }
+          }
+        } // end extrapolate to top
 
-	if (g > 0) // extrapolate to bottom
-	{
-	  kFrom = m_kEndInt[g]-mMaterialExtrapolate;
+        if (g > 0) // extrapolate to bottom
+        {
+          kFrom = m_kEndInt[g]-mMaterialExtrapolate;
 
-	  if (!mQuiet && proc_zero() && mVerbose>=3)
-	    printf("setMaterials> bottom extrapol, g=%i, kFrom=%i, kEnd=%d, kEndInt=%d\n", g, kFrom, m_kEnd[g], m_kEndInt[g]);
+          if (!mQuiet && proc_zero() && mVerbose>=3)
+            printf("setMaterials> bottom extrapol, g=%i, kFrom=%i, kEnd=%d, kEndInt=%d\n", g, kFrom, m_kEnd[g], m_kEndInt[g]);
 
-	  for (int k = kFrom+1; k <= m_kEnd[g]; ++k)
-#pragma omp parallel for
-	    for (int j = m_jStart[g]; j <= m_jEnd[g]; j++)
-	      for (int i = m_iStart[g]; i <= m_iEnd[g]; i++)
-	      {
-		mRho[g](i,j,k)    = mRho[g](i,j,kFrom);
-		mMu[g](i,j,k)     = mMu[g](i,j,kFrom);
-		mLambda[g](i,j,k) = mLambda[g](i,j,kFrom);
-	      }
+          for (int k = kFrom+1; k <= m_kEnd[g]; ++k)
+          #pragma omp parallel for
+          for (int j = m_jStart[g]; j <= m_jEnd[g]; j++)
+          for (int i = m_iStart[g]; i <= m_iEnd[g]; i++)
+          {
+            mRho[g](i,j,k)    = mRho[g](i,j,kFrom);
+            mMu[g](i,j,k)     = mMu[g](i,j,kFrom);
+            mLambda[g](i,j,k) = mLambda[g](i,j,kFrom);
+          }
 
-	  if( m_use_attenuation )
-	  {
-	    for (int k = kFrom+1; k <= m_kEnd[g]; ++k)
-#pragma omp parallel for
-	      for (int j = m_jStart[g]; j <= m_jEnd[g]; j++)
-		for (int i = m_iStart[g]; i <= m_iEnd[g]; i++)
-		{
-		  mQs[g](i,j,k) = mQs[g](i,j,kFrom);
-		  mQp[g](i,j,k) = mQp[g](i,j,kFrom);
-		}
-	  }
-	  
-	} // end extrapolate to bottom
-	
+          if( m_use_attenuation )
+          {
+            for (int k = kFrom+1; k <= m_kEnd[g]; ++k)
+            #pragma omp parallel for
+            for (int j = m_jStart[g]; j <= m_jEnd[g]; j++)
+            for (int i = m_iStart[g]; i <= m_iEnd[g]; i++)
+            {
+              mQs[g](i,j,k) = mQs[g](i,j,kFrom);
+              mQp[g](i,j,k) = mQp[g](i,j,kFrom);
+            }
+          }
+        } // end extrapolate to bottom
       } // end for g      
     } // end if mMaterialExtrapolate > 0 ...
     
-// repeat for the curvilinear grids
+    // repeat for the curvilinear grids
     int NumberOfCurviGrids = mNumberOfGrids - mNumberOfCartesianGrids;
     
     if (mMaterialExtrapolate > 0 && NumberOfCurviGrids > 1)
@@ -1065,75 +1211,72 @@ void EW::set_materials()
       int kFrom;
       for (g=mNumberOfCartesianGrids; g<mNumberOfGrids; g++)
       {
-	if (g < mNumberOfGrids-1) // extrapolate to top
-	{
-	  kFrom = m_kStartInt[g]+mMaterialExtrapolate;
+        if (g < mNumberOfGrids-1) // extrapolate to top
+        {
+          kFrom = m_kStartInt[g]+mMaterialExtrapolate;
 
-	  if (!mQuiet && proc_zero() && mVerbose>=3)
-	    printf("setMaterials> top extrapol, g=%i, kFrom=%d, kStart=%d, kStartInt=%d\n", g, kFrom, m_kStart[g], m_kStartInt[g]);
+          if (!mQuiet && proc_zero() && mVerbose>=3)
+            printf("setMaterials> top extrapol, g=%i, kFrom=%d, kStart=%d, kStartInt=%d\n", g, kFrom, m_kStart[g], m_kStartInt[g]);
 
-	  for (int k = m_kStart[g]; k < kFrom; ++k)
-#pragma omp parallel for
-	    for (int j = m_jStart[g]; j <= m_jEnd[g]; j++)
-	      for (int i = m_iStart[g]; i <= m_iEnd[g]; i++)
-	      {
-		mRho[g](i,j,k)    = mRho[g](i,j,kFrom);
-		mMu[g](i,j,k)     = mMu[g](i,j,kFrom);
-		mLambda[g](i,j,k) = mLambda[g](i,j,kFrom);
-	      }
+          for (int k = m_kStart[g]; k < kFrom; ++k)
+          #pragma omp parallel for
+          for (int j = m_jStart[g]; j <= m_jEnd[g]; j++)
+          for (int i = m_iStart[g]; i <= m_iEnd[g]; i++)
+          {
+            mRho[g](i,j,k)    = mRho[g](i,j,kFrom);
+            mMu[g](i,j,k)     = mMu[g](i,j,kFrom);
+            mLambda[g](i,j,k) = mLambda[g](i,j,kFrom);
+          }
 
-	  if( m_use_attenuation )
-	  {
-	    for (int k = m_kStart[g]; k < kFrom; ++k)
-#pragma omp parallel for
-	      for (int j = m_jStart[g]; j <= m_jEnd[g]; j++)
-		for (int i = m_iStart[g]; i <= m_iEnd[g]; i++)
-		{
-		  mQs[g](i,j,k) = mQs[g](i,j,kFrom);
-		  mQp[g](i,j,k) = mQp[g](i,j,kFrom);
-		}
-	  }
-	  
-	} // end extrapolate to top
+          if( m_use_attenuation )
+          {
+            for (int k = m_kStart[g]; k < kFrom; ++k)
+            #pragma omp parallel for
+            for (int j = m_jStart[g]; j <= m_jEnd[g]; j++)
+            for (int i = m_iStart[g]; i <= m_iEnd[g]; i++)
+            {
+              mQs[g](i,j,k) = mQs[g](i,j,kFrom);
+              mQp[g](i,j,k) = mQp[g](i,j,kFrom);
+            }
+          }
+        } // end extrapolate to top
 
-	if (g > mNumberOfCartesianGrids) // extrapolate to bottom
-	{
-	  kFrom = m_kEndInt[g]-mMaterialExtrapolate;
+        if (g > mNumberOfCartesianGrids) // extrapolate to bottom
+        {
+          kFrom = m_kEndInt[g]-mMaterialExtrapolate;
 
-	  if (!mQuiet && proc_zero() && mVerbose>=3)
-	    printf("setMaterials> bottom extrapol, g=%i, kFrom=%i, kEnd=%d, kEndInt=%d\n", g, kFrom, m_kEnd[g], m_kEndInt[g]);
+          if (!mQuiet && proc_zero() && mVerbose>=3)
+            printf("setMaterials> bottom extrapol, g=%i, kFrom=%i, kEnd=%d, kEndInt=%d\n", g, kFrom, m_kEnd[g], m_kEndInt[g]);
 
-	  for (int k = kFrom+1; k <= m_kEnd[g]; ++k)
-#pragma omp parallel for
-	    for (int j = m_jStart[g]; j <= m_jEnd[g]; j++)
-	      for (int i = m_iStart[g]; i <= m_iEnd[g]; i++)
-	      {
-		mRho[g](i,j,k)    = mRho[g](i,j,kFrom);
-		mMu[g](i,j,k)     = mMu[g](i,j,kFrom);
-		mLambda[g](i,j,k) = mLambda[g](i,j,kFrom);
-	      }
+          for (int k = kFrom+1; k <= m_kEnd[g]; ++k)
+          #pragma omp parallel for
+          for (int j = m_jStart[g]; j <= m_jEnd[g]; j++)
+          for (int i = m_iStart[g]; i <= m_iEnd[g]; i++)
+          {
+            mRho[g](i,j,k)    = mRho[g](i,j,kFrom);
+            mMu[g](i,j,k)     = mMu[g](i,j,kFrom);
+            mLambda[g](i,j,k) = mLambda[g](i,j,kFrom);
+          }
 
-	  if( m_use_attenuation )
-	  {
-	    for (int k = kFrom+1; k <= m_kEnd[g]; ++k)
-#pragma omp parallel for
-	      for (int j = m_jStart[g]; j <= m_jEnd[g]; j++)
-		for (int i = m_iStart[g]; i <= m_iEnd[g]; i++)
-		{
-		  mQs[g](i,j,k) = mQs[g](i,j,kFrom);
-		  mQp[g](i,j,k) = mQp[g](i,j,kFrom);
-		}
-	  }
-	  
-	} // end extrapolate to bottom
-	
+          if( m_use_attenuation )
+          {
+            for (int k = kFrom+1; k <= m_kEnd[g]; ++k)
+            #pragma omp parallel for
+            for (int j = m_jStart[g]; j <= m_jEnd[g]; j++)
+            for (int i = m_iStart[g]; i <= m_iEnd[g]; i++)
+            {
+              mQs[g](i,j,k) = mQs[g](i,j,kFrom);
+              mQp[g](i,j,k) = mQp[g](i,j,kFrom);
+            }
+          }
+        } // end extrapolate to bottom
       } // end for g      
     } // end if mMaterialExtrapolate > 0 and NumberOfCurviGrids > 1
     
-// tmp
-//    printf("\n useVelocityThresholds=%i vpMin=%e vsMin=%e\n\n", m_useVelocityThresholds, m_vpMin, m_vsMin);
-// Extrapolate to ghost points in x and y, if they were not set by the previous routines.
-//    cout << "min rho before " << mRho[0].minimum() << endl;
+    // tmp
+    //    printf("\n useVelocityThresholds=%i vpMin=%e vsMin=%e\n\n", m_useVelocityThresholds, m_vpMin, m_vsMin);
+    // Extrapolate to ghost points in x and y, if they were not set by the previous routines.
+    //    cout << "min rho before " << mRho[0].minimum() << endl;
 
     extrapolateInXY( mRho );
     extrapolateInXY( mMu );
@@ -1147,19 +1290,19 @@ void EW::set_materials()
     //    cout << "min rho after " << mRho[0].minimum() << endl;
     if( m_use_attenuation && m_qmultiplier != 1 )
     {
-       for (int g=0; g<mNumberOfGrids; g++)
-#pragma omp parallel for
-	  for (int k = m_kStart[g]; k <= m_kEnd[g]; k++ )
-	     for (int j = m_jStart[g]; j <= m_jEnd[g]; j++ )
-		for (int i = m_iStart[g]; i <= m_iEnd[g]; i++ )
-		{
-		   mQs[g](i,j,k) = m_qmultiplier*mQs[g](i,j,k);
-		   mQp[g](i,j,k) = m_qmultiplier*mQp[g](i,j,k);
-		}
+      for (int g=0; g<mNumberOfGrids; g++)
+      #pragma omp parallel for
+      for (int k = m_kStart[g]; k <= m_kEnd[g]; k++ )
+      for (int j = m_jStart[g]; j <= m_jEnd[g]; j++ )
+      for (int i = m_iStart[g]; i <= m_iEnd[g]; i++ )
+      {
+        mQs[g](i,j,k) = m_qmultiplier*mQs[g](i,j,k);
+        mQp[g](i,j,k) = m_qmultiplier*mQp[g](i,j,k);
+      }
     }
     
-// add random perturbation
-//    cout << "randomize = " << m_randomize << " randblsize= " << m_random_blocks.size() << endl;
+    // add random perturbation
+    //    cout << "randomize = " << m_randomize << " randblsize= " << m_random_blocks.size() << endl;
     if( m_randomize )
     {
        //  perturb_velocities( mMu, mLambda );
@@ -1202,28 +1345,42 @@ void EW::set_materials()
              communicate_array( mRho[g], g );
        }
     }
-// threshold material velocities
+    // threshold material velocities
     if (m_useVelocityThresholds)
     {
       for (g=0; g<mNumberOfGrids; g++)
-#pragma omp parallel for
-	for (int k = m_kStart[g]; k <= m_kEnd[g]; k++)
+      #pragma omp parallel for
+      for (int k = m_kStart[g]; k <= m_kEnd[g]; k++)
 	    for (int j = m_jStart[g]; j <= m_jEnd[g]; j++)
-	      for (int i = m_iStart[g]; i <= m_iEnd[g]; i++)
-	      {
-		if (mMu[g](i,j,k) < m_vsMin) mMu[g](i,j,k) = m_vsMin;
-		if (mLambda[g](i,j,k) < m_vpMin) mLambda[g](i,j,k) = m_vpMin;
+      for (int i = m_iStart[g]; i <= m_iEnd[g]; i++)
+      {
+        if (mMu[g](i,j,k) < m_vsMin) mMu[g](i,j,k) = m_vsMin;
+        if (mLambda[g](i,j,k) < m_vpMin) mLambda[g](i,j,k) = m_vpMin;
 	      }
     }
 
-
     convert_material_to_mulambda( );
+
+    if( m_use_EQL )
+    {
+      for (int g=0; g<mNumberOfGrids; g++)
+      #pragma omp parallel for
+      for (int k = m_kStart[g]; k <= m_kEnd[g]; k++ )
+      for (int j = m_jStart[g]; j <= m_jEnd[g]; j++ )
+      for (int i = m_iStart[g]; i <= m_iEnd[g]; i++ )
+      {
+        // Save the original versions to use in future
+        mQsOrig_EQL[g](i,j,k) = mQs[g](i,j,k);
+        mMuOrig_EQL[g][0](i,j,k) = mMu[g](i,j,k);
+        mMuOrig_EQL[g][1](i,j,k) = mMu[g](i,j,k);
+      }
+    }
     
     check_for_nan( mMu, 1,"mu ");       
     check_for_nan( mLambda, 1,"lambda ");       
-    check_for_nan( mRho, 1,"rho ");       
+    check_for_nan( mRho, 1,"rho ");  
 
-// do the viscoelastic materials later (after estimating the resolution)
+    // do the viscoelastic materials later (after estimating the resolution)
   } // end if !m_testing, i.e., not Twilight, point source or Lamb's test
   else if (m_twilight_forcing) 
   {

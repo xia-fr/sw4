@@ -1658,7 +1658,6 @@ void Image::compute_file_suffix( stringstream& fileSuffix, int cycle )
    int testcycle = cycle;
    if (cycle == 0)
       testcycle=1;
-   
    while (testcycle < temp)
    {
       fileSuffix << "0";

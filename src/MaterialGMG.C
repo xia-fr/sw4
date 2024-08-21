@@ -79,9 +79,9 @@ void MaterialGMG::set_material_properties(std::vector<Sarray> & rho,
                                              std::vector<Sarray> & xis, 
                                              std::vector<Sarray> & xip )
 {
-// Assume attenuation arrays defined on all grids if they are defined on grid zero.
-   bool use_q = m_use_attenuation && xis[0].is_defined() && xip[0].is_defined();
-   size_t outside=0, material=0;
+  // Assume attenuation arrays defined on all grids if they are defined on grid zero.
+  bool use_q = m_use_attenuation && xis[0].is_defined() && xip[0].is_defined();
+  size_t outside=0, material=0;
 
   const double yazimuthRad = m_Yaz * M_PI / 180.0;
   const double cosAz = cos(yazimuthRad);
@@ -90,165 +90,162 @@ void MaterialGMG::set_material_properties(std::vector<Sarray> & rho,
   for( int g=0 ; g < mEW->mNumberOfGrids ; g++ ) {
     bool curvilinear = mEW->topographyExists() && g >= mEW->mNumberOfCartesianGrids;
     for (int i = mEW->m_iStartInt[g]; i <= mEW->m_iEndInt[g]; ++i) {
-       for (int j = mEW->m_jStartInt[g]; j <= mEW->m_jEndInt[g]; ++j) {
+      for (int j = mEW->m_jStartInt[g]; j <= mEW->m_jEndInt[g]; ++j) {
 
-          float_sw4 x = (i-1)*mEW->mGridSize[g];
-          float_sw4 y = (j-1)*mEW->mGridSize[g];
+        float_sw4 x = (i-1)*mEW->mGridSize[g];
+        float_sw4 y = (j-1)*mEW->mGridSize[g];
 
-          int i0, j0;
-          double sw4_lon, sw4_lat, gmg_x, gmg_y, gmg_x0, gmg_y0, top;
-          mEW->computeGeographicCoord(x, y, sw4_lon, sw4_lat);
-          /* printf("\ncomputeGeographicCoord: %f %f %f %f\n", x, y, sw4_lon, sw4_lat); */
+        int i0, j0;
+        double sw4_lon, sw4_lat, gmg_x, gmg_y, gmg_x0, gmg_y0, top;
+        mEW->computeGeographicCoord(x, y, sw4_lon, sw4_lat);
+        /* printf("\ncomputeGeographicCoord: %f %f %f %f\n", x, y, sw4_lon, sw4_lat); */
 
-          // GMG x/y, lat/lon is switched from sw4 CRS
-          mEW->computeCartesianCoordGMG(gmg_y0, gmg_x0, sw4_lon, sw4_lat, m_CRS);
-          /* printf("computeCartesianCoordGMG : %f %f %f %f\n", gmg_x0, gmg_y0, sw4_lon, sw4_lat); */
-      
-          const double xRel = gmg_x0 - m_Origin_x;
-          const double yRel = gmg_y0 - m_Origin_y;
-          gmg_x = xRel*cosAz - yRel*sinAz;
-          gmg_y = xRel*sinAz + yRel*cosAz;
+        // GMG x/y, lat/lon is switched from sw4 CRS
+        mEW->computeCartesianCoordGMG(gmg_y0, gmg_x0, sw4_lon, sw4_lat, m_CRS);
+        /* printf("computeCartesianCoordGMG : %f %f %f %f\n", gmg_x0, gmg_y0, sw4_lon, sw4_lat); */
+    
+        const double xRel = gmg_x0 - m_Origin_x;
+        const double yRel = gmg_y0 - m_Origin_y;
+        gmg_x = xRel*cosAz - yRel*sinAz;
+        gmg_y = xRel*sinAz + yRel*cosAz;
 
+        i0 = static_cast<int>( floor(gmg_x/m_hh[0]) );
+        j0 = static_cast<int>( floor(gmg_y/m_hh[0]) );
 
-          i0 = static_cast<int>( floor(gmg_x/m_hh[0]) );
-          j0 = static_cast<int>( floor(gmg_y/m_hh[0]) );
+        top = -m_Top_surface[i0*m_Top_dims[1] + j0];
 
-          top = -m_Top_surface[i0*m_Top_dims[1] + j0];
+        for (int k = mEW->m_kStart[g]; k <= mEW->m_kEnd[g]; ++k) {
+          float_sw4 z;
+          if( curvilinear )
+            z = mEW->mZ[g](i,j,k);
+          else
+            z = mEW->m_zmin[g] + (k-1)*mEW->mGridSize[g];
 
-          for (int k = mEW->m_kStart[g]; k <= mEW->m_kEnd[g]; ++k) {
-		float_sw4 z;
-		if( curvilinear )
-		   z = mEW->mZ[g](i,j,k);
-		else
-		   z = mEW->m_zmin[g] + (k-1)*mEW->mGridSize[g];
+          // Deal with some values on top grid that exceeds the topogrophy interface
+          if (g == mEW->mNumberOfGrids - 1 && z < m_Zmin) 
+            z = m_Zmin;
 
-                // Deal with some values on top grid that exceeds the topogrophy interface
-                if (g == mEW->mNumberOfGrids - 1 && z < m_Zmin) 
-                  z = m_Zmin;
+          // Find which block the current point belongs to
+          int gr;
+          for (gr = 1; gr < m_npatches; gr++)
+            if (z <= top - m_ztop[gr]) break;
 
-                // Find which block the current point belongs to
-                int gr;
-                for (gr = 1; gr < m_npatches; gr++)
-                  if (z <= top - m_ztop[gr]) break;
-
-                gr--;
-                double intf = top - m_ztop[gr];
+          gr--;
+          double intf = top - m_ztop[gr];
            
-                // When sw4 z exceeds gmg interface
-                if (z < intf)
-                  z = intf;
+          // When sw4 z exceeds gmg interface
+          if (z < intf)
+            z = intf;
 
-                // i0, j0, k0 are the coordiates in GMG block
-                i0 = static_cast<int>( floor(gmg_x/m_hh[gr]) );
-                j0 = static_cast<int>( floor(gmg_y/m_hh[gr]) );
-                int k0 = static_cast<int>( floor((z-intf)/m_hv[gr]) );
+          // i0, j0, k0 are the coordiates in GMG block
+          i0 = static_cast<int>( floor(gmg_x/m_hh[gr]) );
+          j0 = static_cast<int>( floor(gmg_y/m_hh[gr]) );
+          int k0 = static_cast<int>( floor((z-intf)/m_hv[gr]) );
 
-                // (x, y, z) is the coordinate of current grid point
-		if( m_Zmin <= z && z <= m_Zmax) {
+          // (x, y, z) is the coordinate of current grid point
+		      if( m_Zmin <= z && z <= m_Zmax) {
+		        material++;
 
-		   material++;
+            // Extend the material value if simulation grid is larger than material grid
+            if (i0 >= m_ni[gr] - 1)
+              i0 = m_ni[gr] - 2;
+            if (j0 >= m_nj[gr] - 1)
+              j0 = m_nj[gr] - 2;
+            if (k0 >= m_nk[gr] - 1)
+              k0 = m_nk[gr] - 2;
+            if (k0 < 0)
+              k0 = 0;
 
-                   // Extend the material value if simulation grid is larger than material grid
-                   if (i0 >= m_ni[gr] - 1)
-                       i0 = m_ni[gr] - 2;
-                   if (j0 >= m_nj[gr] - 1)
-                       j0 = m_nj[gr] - 2;
-                   if (k0 >= m_nk[gr] - 1)
-                       k0 = m_nk[gr] - 2;
-                   if (k0 < 0)
-                       k0 = 0;
+            // Use bilinear interpolation always:
+        	  // Bias stencil near the boundary, need to communicate arrays afterwards.
+            float_sw4 wghx = (gmg_x - i0*m_hh[gr]) / m_hh[gr];
+            float_sw4 wghy = (gmg_y - j0*m_hh[gr]) / m_hh[gr];
+            float_sw4 wghz = (z - intf - k0*m_hv[gr]) / m_hv[gr];
 
-		   // Use bilinear interpolation always:
-        	   // Bias stencil near the boundary, need to communicate arrays afterwards.
-                   float_sw4 wghx = (gmg_x - i0*m_hh[gr]) / m_hh[gr];
-                   float_sw4 wghy = (gmg_y - j0*m_hh[gr]) / m_hh[gr];
-                   float_sw4 wghz = (z - intf - k0*m_hv[gr]) / m_hv[gr];
+            /* if (x == 80000 && y == 9000) { */
+            /*     printf("g=%d, ijk: %d %d %d, lalo: %f %f, converted gmg xyz: %f %f %f, intf %f, gr %d, ijk %d %d %d, mat %f %f %f\n", */ 
+            /*             g, i, j, k, sw4_lat, sw4_lon, gmg_x, gmg_y, z, intf, gr, i0, j0, k0, mat(gr,0,i0,j0,k0), mat(gr,1,i0,j0,k0), mat(gr,2,i0,j0,k0) ); */
+            /* } */
 
-                   /* if (x == 80000 && y == 9000) { */
-                   /*     printf("g=%d, ijk: %d %d %d, lalo: %f %f, converted gmg xyz: %f %f %f, intf %f, gr %d, ijk %d %d %d, mat %f %f %f\n", */ 
-                   /*             g, i, j, k, sw4_lat, sw4_lon, gmg_x, gmg_y, z, intf, gr, i0, j0, k0, mat(gr,0,i0,j0,k0), mat(gr,1,i0,j0,k0), mat(gr,2,i0,j0,k0) ); */
-                   /* } */
+            // weights should be within [0, 1]
+            if (wghx > 1 || wghx < 0) { 
+              #ifdef BZ_DEBUG
+		            printf("g=%d, sw4 (%d, %d, %d), gmg (%d, %d, %d) wghx = %.2f\n", gr, i, j, k, i0, j0, k0, wghx);
+              #endif
+              if (wghx > 1) wghx = 1;
+              if (wghx < 0) wghx = 0;
+            }
 
-                   // weights should be within [0, 1]
-                   if (wghx > 1 || wghx < 0) { 
-#ifdef BZ_DEBUG
-		      printf("g=%d, sw4 (%d, %d, %d), gmg (%d, %d, %d) wghx = %.2f\n", gr, i, j, k, i0, j0, k0, wghx);
-#endif
-                      if (wghx > 1) wghx = 1;
-                      if (wghx < 0) wghx = 0;
-                   }
+            if (wghy > 1 || wghy < 0) { 
+              #ifdef BZ_DEBUG
+		            printf("g=%d, sw4 (%d, %d, %d), gmg (%d, %d, %d) wghy = %.2f\n", gr, i, j, k, i0, j0, k0, wghy);
+              #endif
+              if (wghy > 1) wghy = 1;
+              if (wghy < 0) wghy = 0;
+            }
 
-                   if (wghy > 1 || wghy < 0) { 
-#ifdef BZ_DEBUG
-		      printf("g=%d, sw4 (%d, %d, %d), gmg (%d, %d, %d) wghy = %.2f\n", gr, i, j, k, i0, j0, k0, wghy);
-#endif
-                       if (wghy > 1) wghy = 1;
-                       if (wghy < 0) wghy = 0;
-                   }
+            if (wghz > 1 || wghz < 0) { 
+              #ifdef BZ_DEBUG
+		            printf("g=%d, sw4 (%d, %d, %d), gmg (%d, %d, %d) wghz = %.2f\n", gr, i, j, k, i0, j0, k0, wghz);
+              #endif
+              if (wghz > 1) wghz = 1;
+              if (wghz < 0) wghz = 0;
+            }
 
-                   if (wghz > 1 || wghz < 0) { 
-#ifdef BZ_DEBUG
-		      printf("g=%d, sw4 (%d, %d, %d), gmg (%d, %d, %d) wghz = %.2f\n", gr, i, j, k, i0, j0, k0, wghz);
-#endif
-                       if (wghz > 1) wghz = 1;
-                       if (wghz < 0) wghz = 0;
-                   }
+            rho[g](i, j, k) = (1-wghz)*( (1-wghy)*((1-wghx)*mat(gr,0,i0,j0,k0) + wghx*mat(gr,0,i0+1,j0,k0)) +
+                                        wghy*( (1-wghx)*mat(gr,0,i0,j0+1,k0) + wghx*mat(gr,0,i0+1,j0+1,k0)) ) + 
+                              wghz*( (1-wghy)*((1-wghx)*mat(gr,0,i0,j0,k0+1) + wghx*mat(gr,0,i0+1,j0,k0+1) ) +
+                                      wghy*((1-wghx)*mat(gr,0,i0,j0+1,k0+1)+ wghx*mat(gr,0,i0+1,j0+1,k0+1)) );
 
-                   rho[g](i, j, k) = (1-wghz)*( (1-wghy)*((1-wghx)*mat(gr,0,i0,j0,k0) + wghx*mat(gr,0,i0+1,j0,k0)) +
-                                                wghy*( (1-wghx)*mat(gr,0,i0,j0+1,k0) + wghx*mat(gr,0,i0+1,j0+1,k0)) ) + 
-                                     wghz*( (1-wghy)*((1-wghx)*mat(gr,0,i0,j0,k0+1) + wghx*mat(gr,0,i0+1,j0,k0+1) ) +
-                                             wghy*((1-wghx)*mat(gr,0,i0,j0+1,k0+1)+ wghx*mat(gr,0,i0+1,j0+1,k0+1)) );
+            /* if (x == 80000 && y == 9000) { */
+            /*     printf("g=%d, ijk: %d %d %d, lalo: %f %f, converted gmg xyz: %f %f %f, intf %f, gr %d, ijk %d %d %d, mat %f %f %f, rho=%f\n", */ 
+            /*             g, i, j, k, sw4_lat, sw4_lon, gmg_x, gmg_y, z, intf, gr, i0, j0, k0, mat(gr,0,i0,j0,k0), mat(gr,1,i0,j0,k0), mat(gr,2,i0,j0,k0), rho[g](i, j, k)); */
+            /* } */
+            /* if (rho[g](i,j,k) < 1500) { */
+            /*   printf("Rank %d, rho[%d](%d, %d, %d)=%.2f\n", mEW->getRank(), g, i, j, k, rho[g](i,j,k)); */
+            /*   ASSERT(0); */
+            /* } */
 
-                   /* if (x == 80000 && y == 9000) { */
-                   /*     printf("g=%d, ijk: %d %d %d, lalo: %f %f, converted gmg xyz: %f %f %f, intf %f, gr %d, ijk %d %d %d, mat %f %f %f, rho=%f\n", */ 
-                   /*             g, i, j, k, sw4_lat, sw4_lon, gmg_x, gmg_y, z, intf, gr, i0, j0, k0, mat(gr,0,i0,j0,k0), mat(gr,1,i0,j0,k0), mat(gr,2,i0,j0,k0), rho[g](i, j, k)); */
-                   /* } */
-                   /* if (rho[g](i,j,k) < 1500) { */
-                   /*   printf("Rank %d, rho[%d](%d, %d, %d)=%.2f\n", mEW->getRank(), g, i, j, k, rho[g](i,j,k)); */
-                   /*   ASSERT(0); */
-                   /* } */
-
-                   cp[g](i, j, k) = (1-wghz)*( (1-wghy)*((1-wghx)*mat(gr,1,i0,j0,k0) + wghx*mat(gr,1,i0+1,j0,k0)) +
-                                               wghy*( (1-wghx)*mat(gr,1,i0,j0+1,k0) + wghx*mat(gr,1,i0+1,j0+1,k0)) ) + 
-                                    wghz*( (1-wghy)*((1-wghx)*mat(gr,1,i0,j0,k0+1) + wghx*mat(gr,1,i0+1,j0,k0+1) ) +
-                                            wghy*((1-wghx)*mat(gr,1,i0,j0+1,k0+1)+ wghx*mat(gr,1,i0+1,j0+1,k0+1)) );
+            cp[g](i, j, k) = (1-wghz)*( (1-wghy)*((1-wghx)*mat(gr,1,i0,j0,k0) + wghx*mat(gr,1,i0+1,j0,k0)) +
+                                        wghy*( (1-wghx)*mat(gr,1,i0,j0+1,k0) + wghx*mat(gr,1,i0+1,j0+1,k0)) ) + 
+                            wghz*( (1-wghy)*((1-wghx)*mat(gr,1,i0,j0,k0+1) + wghx*mat(gr,1,i0+1,j0,k0+1) ) +
+                                    wghy*((1-wghx)*mat(gr,1,i0,j0+1,k0+1)+ wghx*mat(gr,1,i0+1,j0+1,k0+1)) );
        
-                   /* if (cp[g](i,j,k) < 700) { */
-                     /* printf("Rank %d, cp[%d](%d, %d, %d)=%.2f\n", mEW->getRank(), g, i, j, k, cp[g](i,j,k)); */
-                     /* ASSERT(0); */
-                   /* } */
+            /* if (cp[g](i,j,k) < 700) { */
+              /* printf("Rank %d, cp[%d](%d, %d, %d)=%.2f\n", mEW->getRank(), g, i, j, k, cp[g](i,j,k)); */
+              /* ASSERT(0); */
+            /* } */
 
-                   cs[g](i, j, k) = (1-wghz)*( (1-wghy)*((1-wghx)*mat(gr,2,i0,j0,k0) + wghx*mat(gr,2,i0+1,j0,k0)) +
-                                               wghy*( (1-wghx)*mat(gr,2,i0,j0+1,k0) + wghx*mat(gr,2,i0+1,j0+1,k0)) ) + 
-                                    wghz*( (1-wghy)*((1-wghx)*mat(gr,2,i0,j0,k0+1) + wghx*mat(gr,2,i0+1,j0,k0+1) ) +
-                                            wghy*((1-wghx)*mat(gr,2,i0,j0+1,k0+1)+ wghx*mat(gr,2,i0+1,j0+1,k0+1)) );
+            cs[g](i, j, k) = (1-wghz)*( (1-wghy)*((1-wghx)*mat(gr,2,i0,j0,k0) + wghx*mat(gr,2,i0+1,j0,k0)) +
+                                        wghy*( (1-wghx)*mat(gr,2,i0,j0+1,k0) + wghx*mat(gr,2,i0+1,j0+1,k0)) ) + 
+                            wghz*( (1-wghy)*((1-wghx)*mat(gr,2,i0,j0,k0+1) + wghx*mat(gr,2,i0+1,j0,k0+1) ) +
+                                    wghy*((1-wghx)*mat(gr,2,i0,j0+1,k0+1)+ wghx*mat(gr,2,i0+1,j0+1,k0+1)) );
 
-#ifdef BZ_DEBUG
-                   if (cs[g](i,j,k) < 0) {
-                     printf("Rank %d, cs[%d](%d, %d, %d)=%.2f\n", mEW->getRank(), g, i, j, k, cs[g](i,j,k));
-                     ASSERT(0);
-                   }
-#endif
+            #ifdef BZ_DEBUG
+              if (cs[g](i,j,k) < 0) {
+                printf("Rank %d, cs[%d](%d, %d, %d)=%.2f\n", mEW->getRank(), g, i, j, k, cs[g](i,j,k));
+                ASSERT(0);
+              }
+            #endif
 
-                   if( use_q ) {
-                      xip[g](i, j, k) = (1-wghz)*( (1-wghy)*((1-wghx)*mat(gr,3,i0,j0,k0) + wghx*mat(gr,3,i0+1,j0,k0)) +
-                                                   wghy*( (1-wghx)*mat(gr,3,i0,j0+1,k0) + wghx*mat(gr,3,i0+1,j0+1,k0)) ) + 
-                                        wghz*( (1-wghy)*((1-wghx)*mat(gr,3,i0,j0,k0+1) + wghx*mat(gr,3,i0+1,j0,k0+1) ) +
-                                                wghy*((1-wghx)*mat(gr,3,i0,j0+1,k0+1)+ wghx*mat(gr,3,i0+1,j0+1,k0+1)) );
+            if( use_q ) {
+              xip[g](i, j, k) = (1-wghz)*( (1-wghy)*((1-wghx)*mat(gr,3,i0,j0,k0) + wghx*mat(gr,3,i0+1,j0,k0)) +
+                                            wghy*( (1-wghx)*mat(gr,3,i0,j0+1,k0) + wghx*mat(gr,3,i0+1,j0+1,k0)) ) + 
+                                wghz*( (1-wghy)*((1-wghx)*mat(gr,3,i0,j0,k0+1) + wghx*mat(gr,3,i0+1,j0,k0+1) ) +
+                                        wghy*((1-wghx)*mat(gr,3,i0,j0+1,k0+1)+ wghx*mat(gr,3,i0+1,j0+1,k0+1)) );
 
-                      xis[g](i, j, k) = (1-wghz)*( (1-wghy)*((1-wghx)*mat(gr,4,i0,j0,k0) + wghx*mat(gr,4,i0+1,j0,k0)) +
-                                                   wghy*( (1-wghx)*mat(gr,4,i0,j0+1,k0) + wghx*mat(gr,4,i0+1,j0+1,k0)) ) + 
-                                        wghz*( (1-wghy)*((1-wghx)*mat(gr,4,i0,j0,k0+1) + wghx*mat(gr,4,i0+1,j0,k0+1) ) +
-                                                wghy*((1-wghx)*mat(gr,4,i0,j0+1,k0+1)+ wghx*mat(gr,4,i0+1,j0+1,k0+1)) );
-                   }
+              xis[g](i, j, k) = (1-wghz)*( (1-wghy)*((1-wghx)*mat(gr,4,i0,j0,k0) + wghx*mat(gr,4,i0+1,j0,k0)) +
+                                            wghy*( (1-wghx)*mat(gr,4,i0,j0+1,k0) + wghx*mat(gr,4,i0+1,j0+1,k0)) ) + 
+                                wghz*( (1-wghy)*((1-wghx)*mat(gr,4,i0,j0,k0+1) + wghx*mat(gr,4,i0+1,j0,k0+1) ) +
+                                        wghy*((1-wghx)*mat(gr,4,i0,j0+1,k0+1)+ wghx*mat(gr,4,i0+1,j0+1,k0+1)) );
+            }
+		      } // End if inside
+		      else outside++;
 
-		} // End if inside
-		else
-		   outside++;
-	    } // End for i
-	  } // End for j
-        } // End for k
-   } // end for g...
+	      } // End for k
+	    } // End for j
+    } // End for i
+  } // end for g...
 
    free(m_CRS);
    for (int i = 0; i < m_npatches; i++)
