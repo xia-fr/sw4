@@ -259,7 +259,13 @@ void EW::calculateEQLUpdate(vector<Source*> & a_Sources)
 
     for (int ix = 0; ix < m_vsConv_EQL.size(); ix++)
     {
-      m_vsConvTot_EQL[ix] = m_vsConvTot_EQL[ix]/static_cast<float_sw4>(m_eqlPoints[ix])*100.0;
+      if (m_eqlPoints[ix] == 0)
+      {
+        m_vsConv_EQL[ix] = 0.0;
+        m_vsConvTot_EQL[ix] = 100.0;
+      }
+      else
+        m_vsConvTot_EQL[ix] = m_vsConvTot_EQL[ix]/static_cast<float_sw4>(m_eqlPoints[ix])*100.0;
     }
 
     // First: communicate ghost points between processors in x and y dir.
