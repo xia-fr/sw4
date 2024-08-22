@@ -1,0 +1,64 @@
+# OUTPUT LOCATION
+fileio path=/target/path/here pfs=1 verbose=1 printcycle=25 nwriters=8
+
+# GRID SIZE AND REFINEMENT
+# (using default spheroidal projection)
+grid x=50000 y=40000 z=15000 h=25 lat=37.937145 lon=-122.24717 az=143.638 proj=tmerc datum=NAD83 lon_p=-123.0 lat_p=35.0 scale=0.9996
+supergrid gp=50
+
+# MESH REFINEMENT, hbase=50 hmin=25
+refinement zmax=5000
+
+# GLOBAL MATERIAL LIMITS
+globalmaterial vsmin=250 vpmin=500
+
+# Read NEW USGS 3D velocity model (and optional topography)
+gmg filename=h012_usgs_v21-1-alpha2.h5 directory=/usr/workspace/wave
+topography input=gmg zmax=2000 order=3 file=/usr/workspace/wave/h012_usgs_v21-1-alpha2.h5
+
+# SOURCE
+# center point of the fault is at ( -122.130554 , 37.729767 ), fault length is 25.0 km, and width = 8 km
+time t=60.0
+rupture file=/usr/workspace/wave/sw4-eql/examples/eql/02_m6/m6.00-25.0x8.0_s100-rvf0.72-Hayward_scor0.95_vr0.72_dh3.0.srf
+
+prefilter fc2=5 type=lowpass passes=2 order=2
+attenuation phasefreq=1.0 nmech=3 maxfreq=10.0  
+
+# EQUIVALENT LINEAR
+eql iter=2 srctype=velocity srcdistlim=500 vslim=3500 depthlim=10000 conv=5
+
+# REC
+rec x=8000 y=8000 depth=0 variables=displacement file=x8y8
+rec x=8000 y=8000 depth=1000 variables=displacement file=x8y8d1
+
+rec x=25000 y=8000 depth=0 variables=displacement file=x25y8
+
+rec x=40000 y=8000 depth=0 variables=displacement file=x40y8
+rec x=40000 y=8000 depth=1000 variables=displacement file=x40y8d1
+
+rec x=8000 y=25000 depth=0 variables=displacement file=x8y25
+rec x=8000 y=25000 depth=1000 variables=displacement file=x8y25d1
+
+rec x=40000 y=30000 depth=0 variables=displacement file=x40y30
+rec x=40000 y=30000 depth=1000 variables=displacement file=x40y30d1
+
+# IMAGES
+image mode=uz z=0 file=surf timeInterval=.1
+image mode=s z=0 file=surf cycle=0
+image mode=qs z=0 file=surf cycle=0
+
+image mode=s x=8000 file=wave cycle=0
+image mode=qs x=8000 file=wave cycle=0
+image mode=ux x=8000 file=wave timeInterval=.1
+
+image mode=s x=25000 file=wave cycle=0
+image mode=qs x=25000 file=wave cycle=0
+image mode=ux x=25000 file=wave timeInterval=.1
+
+image mode=s x=40000 file=wave cycle=0
+image mode=qs x=40000 file=wave cycle=0
+image mode=ux x=40000 file=wave timeInterval=.1
+
+image mode=s y=8000 file=wave cycle=0
+image mode=qs y=8000 file=wave cycle=0
+image mode=ux y=8000 file=wave timeInterval=.1

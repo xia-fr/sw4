@@ -1,0 +1,38 @@
+# OUTPUT LOCATION
+fileio path=/target/path/here pfs=1 verbose=1 printcycle=25 nwriters=8
+
+# GRID SIZE AND REFINEMENT
+# (using default spheroidal projection)
+grid x=8000 y=8000 z=8000 h=50 lat=37.395833 lon=-121.672222 az=143.638 proj=tmerc datum=NAD83 lon_p=-123.0 lat_p=35.0 scale=0.9996
+supergrid gp=25
+
+# MESH REFINEMENT, hbase=50 hmin=25
+refinement zmax=3000
+
+# GLOBAL MATERIAL LIMITS
+block vp=5000 vs=3500 rho=1750 qp=600 qs=300
+block vp=5000 vs=1000 rho=1750 qp=600 qs=300 x1=1500 x2=6500 y1=1500 y2=6500 z1=-500 z2=4000 absdepth=1
+globalmaterial vsmin=250 vpmin=500
+
+topography input=gaussian zmax=1500 gaussianAmp=500 gaussianXc=4000 gaussianYc=4000 gaussianLx=2000 gaussianLy=2000
+
+# SOURCE
+time t=30.0
+source x=4000 y=4000 z=5000 m0=4.835e15 dip=90 strike=320 rake=170 t0=1.2 freq=70.0 type=Gaussian
+
+prefilter fc2=2.5 type=lowpass passes=2 order=2
+attenuation phasefreq=1.0 nmech=3 maxfreq=10.0 
+
+# EQUIVALENT LINEAR
+eql iter=2 srctype=velocity srcdistlim=2500 vslim=3000 zlim=3500 conv=5.0
+
+# REC
+rec x=4000 y=2000 depth=0 variables=displacement file=rec
+
+# IMAGES
+image mode=s x=4000 file=img cycle=0
+image mode=s y=4000 file=img cycle=0
+image mode=qs x=4000 file=img cycle=0
+image mode=qs y=4000 file=img cycle=0
+
+image mode=ux x=4000 file=wave timeInterval=.1
