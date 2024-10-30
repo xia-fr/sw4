@@ -258,6 +258,8 @@ OBJ  = EW.o Sarray.o version.o parseInputFile.o ForcingTwilight.o \
        GridGeneratorGaussianHill.o CurvilinearInterface2.o SfileOutput.o pseudohess.o \
        fastmarching.o solveTT.o rhs4th3point.o MaterialGMG.o
 
+# Equivalent linear
+ OBJ +=  EquivalentLinear.o 
 
 # Fortran routines (lamb_exact_numquad needs QUADPACK)
  OBJ +=  rayleighfort.o lamb_exact_numquad.o 
