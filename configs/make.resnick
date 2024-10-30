@@ -1,5 +1,7 @@
 etree = no
-proj = yes
+
+# On Caltech Resnick HPC, load the following module before compilation:
+# module load openmpi/4.1.5-gcc-11.3.1-xjqcckv 
 
 # CXX = C++ compiler (Open MPI)
 CXX = mpicxx
@@ -8,8 +10,7 @@ CXX = mpicxx
 FC = mpifort
 
 # SW4ROOT = path to third party libraries (used when proj=yes)
-# Note: third party libraries should have include files in $(SW4ROOT)/include, 
-#       libraries in $(SW4ROOT)/lib
+proj = yes
 SW4ROOT = /central/software9/spack/opt/spack/linux-rhel9-x86_64/gcc-11.3.1/proj-8.1.0-53id2wb744oxnqiwesxyg77wtsp7ena3
 
 # HDF5ROOT = path to hdf5 library and include files (used when hdf5=yes)
@@ -20,16 +21,8 @@ HDF5ROOT = /central/software9/spack/opt/spack/linux-rhel9-x86_64/gcc-11.3.1/hdf5
 fftw = yes
 FFTWHOME = /central/software9/spack/opt/spack/linux-rhel9-x86_64/gcc-11.3.1/fftw-3.3.10-ue6oddl67exxsaz27qdqk2qcdumdhpmk
 
-# The following environmental variables are optional:
-# EXTRA_LINK_FLAGS = additional arguments to the linker
-
-LAPACK_PATH = /central/software9/spack/opt/spack/linux-rhel9-x86_64/gcc-11.3.1/lapackpp-2023.08.25-wf5s6ohidkakn3rbeljlcsaksxxk7jod
-BLAS_PATH = /central/software9/spack/opt/spack/linux-rhel9-x86_64/gcc-11.3.1/blaspp-2023.08.25-q3qoevapabzjjlkhsgbigtor5225v5n4
-GCC_PATH = /central/software9/spack/opt/spack/linux-rhel9-x86_64/gcc-11.3.1/gcc-runtime-11.3.1-jw6fhudmgcynd3rehlybvtvael2ekeqc
-TIFF_PATH = /central/software9/spack/opt/spack/linux-rhel9-x86_64/gcc-11.3.1/libtiff-4.5.1-3gmnxwesbw7jz454qvogesk7ztcmusqo
 JPEG_PATH = /central/software9/spack/opt/spack/linux-rhel9-x86_64/gcc-11.3.1/libjpeg-turbo-3.0.0-fykwcrceqhi6w3itiadp4zmwc4udujo6
-
-EXTRA_LINK_FLAGS = -Wl,-rpath=${FFTWHOME}/lib64 -Wl,-rpath=${SW4ROOT}/lib64 -L${LAPACK_PATH}/lib64 -llapack -L${BLAS_PATH}/lib64 -lblas -L${GCC_PATH}/lib -lgfortran -L${JPEG_PATH}/lib64 -ljpeg -L${TIFF_PATH}/lib64 -ltiff
+EXTRA_LINK_FLAGS = -L${JPEG_PATH}/lib64 -ljpeg -Wl,-rpath=${FFTWHOME}/lib64 -Wl,-rpath=${SW4ROOT}/lib64 -L$/usr/lib64 -llapack -lblas -lgfortran
 
 # EXTRA_CXX_FLAGS  = additional c++ compiler flags
 # EXTRA_FORT_FLAGS = additional fortran compiler flags
