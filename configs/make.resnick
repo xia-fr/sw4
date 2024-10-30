@@ -1,30 +1,34 @@
 etree = no
 
 # On Caltech Resnick HPC, load the following module before compilation:
-# module load openmpi/4.1.5-gcc-11.3.1-xjqcckv 
+# module load openmpi/4.1.5-gcc-13.2.0-24q3ap2
+# module load netlib-lapack/3.11.0-gcc-13.2.0-4esdzy6
 
-# CXX = C++ compiler (Open MPI)
+# CXX = C++ compiler
 CXX = mpicxx
 
-# FC  = Fortran compiler (Open MPI)
+# FC  = Fortran compiler
 FC = mpifort
 
 # SW4ROOT = path to third party libraries (used when proj=yes)
 proj = yes
-SW4ROOT = /central/software9/spack/opt/spack/linux-rhel9-x86_64/gcc-11.3.1/proj-8.1.0-53id2wb744oxnqiwesxyg77wtsp7ena3
+#SW4ROOT = /central/software9/spack/opt/spack/linux-rhel9-x86_64/gcc-13.2.0/proj-9.2.1-xl253eh6gyseunwt3mghmo5556ccinio
+SW4ROOT = /central/software9/spack/opt/spack/linux-rhel9-x86_64/gcc-13.2.0/proj-9.2.1-6s7e3ap7g5cwiu6wzqk2fazgw2xayskb
 
 # HDF5ROOT = path to hdf5 library and include files (used when hdf5=yes)
 hdf5 = yes
-HDF5ROOT = /central/software9/spack/opt/spack/linux-rhel9-x86_64/gcc-11.3.1/hdf5-1.14.3-juor6c7dn2dhb6jwk6jgagom3scde677
+HDF5ROOT = /central/software9/spack/opt/spack/linux-rhel9-x86_64/gcc-13.2.0/hdf5-1.14.2-zyllczkt7q5evp67u6wmr67ti4lyhd4o
 
 # FFTWHOME = path to fftw library and include files (used when fftw=yes)
 fftw = yes
-FFTWHOME = /central/software9/spack/opt/spack/linux-rhel9-x86_64/gcc-11.3.1/fftw-3.3.10-ue6oddl67exxsaz27qdqk2qcdumdhpmk
+FFTWHOME = /central/software9/spack/opt/spack/linux-rhel9-x86_64/gcc-13.2.0/fftw-3.3.10-daid3t3zvwm5xeks4vo6tfdsu3vloi65
 
-JPEG_PATH = /central/software9/spack/opt/spack/linux-rhel9-x86_64/gcc-11.3.1/libjpeg-turbo-3.0.0-fykwcrceqhi6w3itiadp4zmwc4udujo6
-EXTRA_LINK_FLAGS = -L${JPEG_PATH}/lib64 -ljpeg -Wl,-rpath=${FFTWHOME}/lib64 -Wl,-rpath=${SW4ROOT}/lib64 -L$/usr/lib64 -llapack -lblas -lgfortran
+LIBJPEG = /central/software9/spack/opt/spack/linux-rhel9-x86_64/gcc-13.2.0/libjpeg-turbo-3.0.0-k66npb3oxf76ga6mrvddedgz536w6742
+LAPACK = /central/software9/spack/opt/spack/linux-rhel9-x86_64/gcc-13.2.0/netlib-lapack-3.11.0-4esdzy6ce65kamgr2bssy7th5ucjpa44
+EXTRA_LINK_FLAGS = -L${LIBJPEG}/lib64 -ljpeg -Wl,-rpath=${FFTWHOME}/lib -Wl,-rpath=${SW4ROOT}/lib -L${LAPACK}/lib64 -llapack -lblas -lgfortran -Wl,-rpath,${LAPACK}/lib64
 
 # EXTRA_CXX_FLAGS  = additional c++ compiler flags
 # EXTRA_FORT_FLAGS = additional fortran compiler flags
 
 optdir := optimize_resnick
+debugdir := debug_resnick
