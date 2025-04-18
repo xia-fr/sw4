@@ -213,12 +213,22 @@ Source::Source(EW *a_ew, float_sw4 frequency, float_sw4 t0,
      mIpar  = new int[1];
   }
 
-  if( mTimeDependence == iDiscrete || mTimeDependence == iDiscrete6moments || mTimeDependence == iDiscrete3forces )
-     spline_interpolation();
-  else
+  // FX 250221: This caused the spline interpolation to be double calculated for some processors when
+  //            using the discrete time function source type. Replaced it with the same lines in
+  //            the other constructor for moment sources.
+  // if( mTimeDependence == iDiscrete || mTimeDependence == iDiscrete6moments || mTimeDependence == iDiscrete3forces )
+  // {
+  //    spline_interpolation();
+  // }
+  // else
+  // {
+  //    mPar[0] = find_min_exponent();
+  //    mPar[1] = mNcyc;
+  // }
+  if( mTimeDependence != iDiscrete && mTimeDependence != iDiscrete6moments && mTimeDependence != iDiscrete3forces ) // not sure about iDiscrete6moments
   {
-     mPar[0] = find_min_exponent();
-     mPar[1] = mNcyc;
+    mPar[0] = find_min_exponent();
+    mPar[1] = mNcyc;
   }
 
   //  a_ew->computeNearestGridPoint2(m_i0,m_j0,m_k0,m_grid,mX0,mY0,mZ0);
@@ -1146,368 +1156,363 @@ alph*alph*alph*alph*alph)*(1.0/3.0+pow(alph-2.0,3.0)/24.0+pow(alph-2.0,2.0)/
 //------ filter and fix up any discrete time functions ----------------
 void Source::prepareTimeFunc(bool doFilter, float_sw4 sw4TimeStep, int sw4TimeSamples, Filter* sw4_filter)
 {
+  if (mTimeDependence == iDiscrete || mTimeDependence == iDiscrete6moments || mTimeDependence == iDiscrete3forces )
+  {
+    // new approach for Discrete time functions
+    if (!doFilter)
+    {
+      spline_interpolation();
+      m_timeFuncIsReady = true;
+    }
+    else
+    {
+      // 0. build filter for the discrete time series
+      // 1. compute pre and post durations of filter tail
+      // 2. extend time grid by appropriate number of time samples, pad with zeros
+      // 3. Perform filtering with the dt of the time series
+      // 4. Interpolate by spline
+      Filter my_filter( sw4_filter->get_type(), sw4_filter->get_order(), sw4_filter->get_passes(),
+                        sw4_filter->get_corner_freq1(), sw4_filter->get_corner_freq2());
+      // time step in the time series
+      float_sw4 dt = 1/mFreq;
+      // setup the filter for time step dt
+      my_filter.computeSOS( dt );
+      float_sw4 preCursorTime = my_filter.estimatePrecursor();
+      int nPadding = static_cast<int>(ceil(preCursorTime/dt));
+      // current number of points
+      int npts = mIpar[0];
+      float_sw4 tstart = mPar[0];
+      int ext_npts = npts + 2*nPadding;
+      float_sw4 *ext_par = new float_sw4[ext_npts+1];
+      float_sw4 ext_tstart = tstart - nPadding*dt;
+      // setup ext_par
+      ext_par[0] = ext_tstart;
+      int i;
+      // initial zeros
+      for (i=0; i<nPadding; i++)
+        ext_par[i+1] = 0.0;
+      // copy values from origianla time series
+      #pragma omp parallel for
+      for (int i=0; i<npts; i++)
+        ext_par[i + nPadding + 1] = mPar[i+1];
+      // trailing zeros
+      for (i=nPadding+npts; i<ext_npts; i++)
+        ext_par[i+1] = 0.0;
 
-   if (mTimeDependence == iDiscrete || mTimeDependence == iDiscrete6moments || mTimeDependence == iDiscrete3forces )
-   {
-      // new approach for Discrete time functions
-      if (!doFilter)
-      {
-         spline_interpolation();
-         m_timeFuncIsReady = true;
+      // Filter the extended time series (ext_par[0] = ext_tstart and should not be filtered)
+      my_filter.evaluate( ext_npts, &ext_par[1], &ext_par[1] );
+
+      // Give the source time function a smooth start if this is a 2-pass (forward + backward) bandpass filter (copied from below)
+      if( my_filter.get_passes() == 2 && my_filter.get_type() == bandPass )
+      {    
+        float_sw4 wghv, xi;
+        int p0=3, p=20 ; // First non-zero time level, and number of points in ramp;
+        if( p0+p <= ext_npts ) // only do this if the time series is long enough
+        {
+          for( int i=1 ; i<=p0-1 ; i++ )
+          {
+            ext_par[i] = 0;
+          }
+          for( int i=p0 ; i<=p0+p ; i++ )
+          {
+            wghv = 0;
+            xi = (i-p0)/((float_sw4) p);
+            // polynomial P(xi), P(0) = 0, P(1)=1
+            wghv = xi*xi*xi*xi*(35-84*xi+70*xi*xi-20*xi*xi*xi);
+            ext_par[i] *=wghv;
+          }
+        }
       }
-      else
-      {
-         // 0. build filter for the discrete time series
-         // 1. compute pre and post durations of filter tail
-         // 2. extend time grid by appropriate number of time samples, pad with zeros
-         // 3. Perform filtering with the dt of the time series
-         // 4. Interpolate by spline
-         Filter my_filter( sw4_filter->get_type(), sw4_filter->get_order(), sw4_filter->get_passes(),
-                           sw4_filter->get_corner_freq1(), sw4_filter->get_corner_freq2());
-// time step in the time series
-         float_sw4 dt = 1/mFreq;
-// setup the filter for time step dt
-         my_filter.computeSOS( dt );
-         float_sw4 preCursorTime = my_filter.estimatePrecursor();
-         int nPadding = static_cast<int>(ceil(preCursorTime/dt));
-// current number of points
-         int npts = mIpar[0];
-         float_sw4 tstart = mPar[0];
-         int ext_npts = npts + 2*nPadding;
-         float_sw4 *ext_par = new float_sw4[ext_npts+1];
-         float_sw4 ext_tstart = tstart - nPadding*dt;
-// setup ext_par
-         ext_par[0] = ext_tstart;
-         int i;
-// initial zeros
-         for (i=0; i<nPadding; i++)
-            ext_par[i+1] = 0.0;
-// copy values from origianla time series
-#pragma omp parallel for
-         for (int i=0; i<npts; i++)
-            ext_par[i + nPadding + 1] = mPar[i+1];
-// trailing zeros
-         for (i=nPadding+npts; i<ext_npts; i++)
-            ext_par[i+1] = 0.0;
 
-// Filter the extended time series (ext_par[0] = ext_tstart and should not be filtered)
-         my_filter.evaluate( ext_npts, &ext_par[1], &ext_par[1] );
-
-// Give the source time function a smooth start if this is a 2-pass (forward + backward) bandpass filter (copied from below)
-         if( my_filter.get_passes() == 2 && my_filter.get_type() == bandPass )
-         {    
-            float_sw4 wghv, xi;
-            int p0=3, p=20 ; // First non-zero time level, and number of points in ramp;
-            if( p0+p <= ext_npts ) // only do this if the time series is long enough
-            {
-               for( int i=1 ; i<=p0-1 ; i++ )
-               {
-                  ext_par[i] = 0;
-               }
-               for( int i=p0 ; i<=p0+p ; i++ )
-               {
-                  wghv = 0;
-                  xi = (i-p0)/((float_sw4) p);
-	 // polynomial P(xi), P(0) = 0, P(1)=1
-                  wghv = xi*xi*xi*xi*(35-84*xi+70*xi*xi-20*xi*xi*xi);
-                  ext_par[i] *=wghv;
-               }
-            }
-         }
-
-   // update parameters for the discrete function
-         mNipar = 1;
-//      mIpar = new int[mNipar];
-         mIpar[0] = ext_npts;
-//      mFreq = 1./dt;   
-         delete[] mPar; // return memory for the previous time series
-         mNpar = ext_npts+1;
-         mPar = ext_par;
-         mPar[0] = ext_tstart; // regular (like Gaussian) time functions are defined from t=tstart=0
-         mT0 = ext_tstart;
+      // update parameters for the discrete function
+      mNipar = 1;
+      //      mIpar = new int[mNipar];
+        mIpar[0] = ext_npts;
+      //      mFreq = 1./dt;   
+      delete[] mPar; // return memory for the previous time series
+      mNpar = ext_npts+1;
+      mPar = ext_par;
+      mPar[0] = ext_tstart; // regular (like Gaussian) time functions are defined from t=tstart=0
+      mT0 = ext_tstart;
       // for( int i=0 ; i < nsteps; i++ )
       //    mPar[i+1] = discfunc[i];
       // delete[] discfunc;
 
-   // Build the spline representation
-         spline_interpolation();
-         m_is_filtered = true;
-// only do the filtering once
-         m_timeFuncIsReady = true;
-      } // end doFilter
-      
-   } // end if iDiscrete or iDiscrete6Moments
-   else // all other time functions
-   {
-// Modify the time functions if prefiltering is enabled
-      if (doFilter)
-      {
-// the sw4 filter is assumed to already been initialized for the sw4 time step
+      // Build the spline representation
+      spline_interpolation();
+      m_is_filtered = true;
+      // only do the filtering once
+      m_timeFuncIsReady = true;
+    } // end doFilter
+  } // end if iDiscrete or iDiscrete6Moments
+  else // all other time functions
+  {
+    // Modify the time functions if prefiltering is enabled
+    if (doFilter)
+    {
+      // the sw4 filter is assumed to already been initialized for the sw4 time step
 	
-// 1. Make sure the smallest time offset is at least t0_min + (timeFcn dependent offset for centered fcn's)
-	float_sw4 t0_inc = 0;
-	float_sw4 t0_min;
-	t0_min = sw4_filter->estimatePrecursor();
+      // 1. Make sure the smallest time offset is at least t0_min + (timeFcn dependent offset for centered fcn's)
+      float_sw4 t0_inc = 0;
+      float_sw4 t0_min;
+      t0_min = sw4_filter->estimatePrecursor();
 	
-// here we only have one time function
-// // old estimate for 2-pole low-pass Butterworth
-// //	t0_min = 4./sw4_filter->get_corner_freq2();
-	
-        t0_inc = compute_t0_increase( t0_min );
+      // here we only have one time function
+      // // old estimate for 2-pole low-pass Butterworth
+      // //	t0_min = 4./sw4_filter->get_corner_freq2();
+      t0_inc = compute_t0_increase( t0_min );
 	  
-// If t0_inc is positive, the t0 field in the source command should be incremented 
-// by at least this amount. Otherwise, there might be significant artifacts from 
-// a sudden start of some source.
-	if (t0_inc > 0.)
-	{
-// Don't mess with t0.
-// Instead, warn the user of potential transients due to unsmooth start
-           printf("\n*** WARNING: the 2 pass prefilter has an estimated precursor of length %e s\n"
-		   "*** To avoid artifacts due to sudden startup, increase t0 in the source named '%s' by at least %e\n\n",
-                  t0_min, getName().c_str(), t0_inc);
-	}
+      // If t0_inc is positive, the t0 field in the source command should be incremented 
+      // by at least this amount. Otherwise, there might be significant artifacts from 
+      // a sudden start of some source.
+      if (t0_inc > 0.)
+      {
+        // Don't mess with t0.
+        // Instead, warn the user of potential transients due to unsmooth start
+        printf("\n*** WARNING: the 2 pass prefilter has an estimated precursor of length %e s\n"
+          "*** To avoid artifacts due to sudden startup, increase t0 in the source named '%s' by at least %e\n\n",
+                      t0_min, getName().c_str(), t0_inc);
+      }
 
-// Do the actual filtering
-// this function no longer handles discrete time functions
-        filter_timefunc( sw4_filter, 0.0, sw4TimeStep, sw4TimeSamples ); 
-      } // end if doFilter
-      
-      
-// set the flag to indicate that the filtering is complete
+      // Do the actual filtering
+      // this function no longer handles discrete time functions
+      filter_timefunc( sw4_filter, 0.0, sw4TimeStep, sw4TimeSamples );
+    } // end if doFilter
+
+      // set the flag to indicate that the filtering is complete
       m_timeFuncIsReady = true;
    } // end if timeDep != iDiscrete
-   
 }
 
 
 //-----------------------------------------------------------------------
 void Source::set_grid_point_sources4( EW *a_EW, vector<GridPointSource*>& point_sources )
 {
-// This routine is called from all processors, for each input source.
-   int i,j,k,g;
-   int success = a_EW->computeNearestGridPoint2( i, j, k, g, mX0, mY0, mZ0 );
-   int gg = -1;
-   if( success )
-      gg = g;
-   MPI_Allreduce(&gg,&g,1,MPI_INT,MPI_MAX,a_EW->m_1d_communicator);
-   float_sw4 q, r, s;
-   float_sw4 h = a_EW->mGridSize[g];
-   bool canBeInverted, curvilinear;
-   float_sw4 normwgh[4]={17.0/48.0, 59.0/48.0, 43.0/48.0, 49.0/48.0 };
+  // This routine is called from all processors, for each input source.
+  int i,j,k,g;
+  int success = a_EW->computeNearestGridPoint2( i, j, k, g, mX0, mY0, mZ0 );
+  int gg = -1;
+  if( success )
+    gg = g;
+  MPI_Allreduce(&gg,&g,1,MPI_INT,MPI_MAX,a_EW->m_1d_communicator);
+  float_sw4 q, r, s;
+  float_sw4 h = a_EW->mGridSize[g];
+  bool canBeInverted, curvilinear;
+  float_sw4 normwgh[4]={17.0/48.0, 59.0/48.0, 43.0/48.0, 49.0/48.0 };
 
-   //   cout << "source location " << i << " " << j << " g= " << g  << " " << mX0 << " " 
-   //        << mY0 << " " << mZ0 << endl;
+  //   cout << "source location " << i << " " << j << " g= " << g  << " " << mX0 << " " 
+  //        << mY0 << " " << mZ0 << endl;
 
-   if( g > a_EW->mNumberOfCartesianGrids-1 && a_EW->topographyExists() )
-   {
-// Curvilinear
-// Problem when the curvilinear mapping is not analytic:
-// This routine can only compute the 's' coordinate if (mX0, mY0) is owned by this processor
-      canBeInverted = a_EW->m_gridGenerator->inverse_grid_mapping(a_EW, mX0, mY0, mZ0, g, q, r, s );
+  if( g > a_EW->mNumberOfCartesianGrids-1 && a_EW->topographyExists() )
+  {
+    // Curvilinear
+    // Problem when the curvilinear mapping is not analytic:
+    // This routine can only compute the 's' coordinate if (mX0, mY0) is owned by this processor
+    canBeInverted = a_EW->m_gridGenerator->inverse_grid_mapping(a_EW, mX0, mY0, mZ0, g, q, r, s );
 
-      // Broadcast the computed s to all processors. 
-      // First find out the ID of a processor that defines s ...
-      int s_owner = -1;
-      if( canBeInverted )
-         MPI_Comm_rank(a_EW->m_1d_communicator, &s_owner );
-      int s_owner_tmp = s_owner;
-      MPI_Allreduce( &s_owner_tmp, &s_owner, 1, MPI_INT, MPI_MAX, a_EW->m_1d_communicator );
-      // ...then broadcast s
-      if( s_owner > -1 )
-	 MPI_Bcast( &s, 1, a_EW->m_mpifloat, s_owner, a_EW->m_1d_communicator );// s_owner is sender, all others receive
-      else
-      {
-	 printf("ERROR in Source::set_grid_point_sources4, no processor could invert the grid mapping \n");
-	 MPI_Abort(MPI_COMM_WORLD,1);
-      }
+    // Broadcast the computed s to all processors. 
+    // First find out the ID of a processor that defines s ...
+    int s_owner = -1;
+    if( canBeInverted )
+        MPI_Comm_rank(a_EW->m_1d_communicator, &s_owner );
+    int s_owner_tmp = s_owner;
+    MPI_Allreduce( &s_owner_tmp, &s_owner, 1, MPI_INT, MPI_MAX, a_EW->m_1d_communicator );
+    // ...then broadcast s
+    if( s_owner > -1 )
+      MPI_Bcast( &s, 1, a_EW->m_mpifloat, s_owner, a_EW->m_1d_communicator );// s_owner is sender, all others receive
+    else
+    {
+      printf("ERROR in Source::set_grid_point_sources4, no processor could invert the grid mapping \n");
+      MPI_Abort(MPI_COMM_WORLD,1);
+    }
 
-// if s < 0, the source is located above the grid and the call to
-// find_curvilinear_derivatives_at_point will fail
-      if (s<0.)
-      {
-	 float_sw4 xTop, yTop, zTop;
-	 a_EW->m_gridGenerator->grid_mapping(a_EW, q, r, 0., g, xTop, yTop, zTop); 
-	 double lat, lon;
-	 a_EW->computeGeographicCoord(mX0, mY0, lon, lat);
-	 printf("Found a source above the curvilinear grid! Lat=%e, Lon=%e, source Z-level = %e, grid boundary Z = %e\n",
-		lat, lon, mZ0, zTop);
-	 MPI_Abort(MPI_COMM_WORLD,1);
-      }
-      curvilinear   = true;
-      canBeInverted = true;
-   }
-   else
-   {
-// Cartesian case
-      q = mX0/h+1;
-      r = mY0/h+1;
-      s = (mZ0-a_EW->m_zmin[g])/h+1;
-      canBeInverted = true;
-      curvilinear   = false;
-   }
-   bool curvilineargp1 = g+1 >= a_EW->mNumberOfCartesianGrids;
-   bool curvilineargm1 = g-1 >= a_EW->mNumberOfCartesianGrids;
-   
-   int Ni = a_EW->m_global_nx[g];
-   int Nj = a_EW->m_global_ny[g];
-   int Nz = a_EW->m_global_nz[g];
+    // if s < 0, the source is located above the grid and the call to
+    // find_curvilinear_derivatives_at_point will fail
+    if (s<0.)
+    {
+      float_sw4 xTop, yTop, zTop;
+      a_EW->m_gridGenerator->grid_mapping(a_EW, q, r, 0., g, xTop, yTop, zTop); 
+      double lat, lon;
+      a_EW->computeGeographicCoord(mX0, mY0, lon, lat);
+      printf("Found a source above the curvilinear grid! Lat=%e, Lon=%e, source Z-level = %e, grid boundary Z = %e\n",
+      lat, lon, mZ0, zTop);
+      MPI_Abort(MPI_COMM_WORLD,1);
+    }
+    curvilinear   = true;
+    canBeInverted = true;
+  }
+  else
+  {
+    // Cartesian case
+    q = mX0/h+1;
+    r = mY0/h+1;
+    s = (mZ0-a_EW->m_zmin[g])/h+1;
+    canBeInverted = true;
+    curvilinear   = false;
+  }
+  bool curvilineargp1 = g+1 >= a_EW->mNumberOfCartesianGrids;
+  bool curvilineargm1 = g-1 >= a_EW->mNumberOfCartesianGrids;
+  
+  int Ni = a_EW->m_global_nx[g];
+  int Nj = a_EW->m_global_ny[g];
+  int Nz = a_EW->m_global_nz[g];
 
-   int ic, jc, kc;
-   bool upperbndry, lowerbndry, ccbndry, gridrefbndry;
-   float_sw4 ai, bi, ci;
+  int ic, jc, kc;
+  bool upperbndry, lowerbndry, ccbndry, gridrefbndry;
+  float_sw4 ai, bi, ci;
 
-// Delta distribution
-   float_sw4 wghi[6], wghj[6], wghk[6], wghix[6], wghjy[6], wghkz[6];
-   float_sw4 wghixx[6], wghjyy[6], wghkzz[6];
-// Delta' distribution
-   float_sw4 dwghi[6], dwghj[6], dwghk[6], dwghix[6], dwghjy[6], dwghkz[6];
-   float_sw4 dwghixx[6], dwghjyy[6], dwghkzz[6];
+  // Delta distribution
+  float_sw4 wghi[6], wghj[6], wghk[6], wghix[6], wghjy[6], wghkz[6];
+  float_sw4 wghixx[6], wghjyy[6], wghkzz[6];
+  // Delta' distribution
+  float_sw4 dwghi[6], dwghj[6], dwghk[6], dwghix[6], dwghjy[6], dwghkz[6];
+  float_sw4 dwghixx[6], dwghjyy[6], dwghkzz[6];
 
-   // k-weights across mesh refinement boundary
-   float_sw4 wghkref[6], dwghkref[6], wghrefkz[6], wghrefkzz[6];
+  // k-weights across mesh refinement boundary
+  float_sw4 wghkref[6], dwghkref[6], wghrefkz[6], wghrefkzz[6];
 
-// at this point canBeInverted == true
-//   if( canBeInverted )
-//   {
-   // Compute source location and weights in source discretization
-   ic = static_cast<int>(floor(q));
-   jc = static_cast<int>(floor(r));
-   kc = static_cast<int>(floor(s));
+  // at this point canBeInverted == true
+  //   if( canBeInverted )
+  //   {
+  // Compute source location and weights in source discretization
+  ic = static_cast<int>(floor(q));
+  jc = static_cast<int>(floor(r));
+  kc = static_cast<int>(floor(s));
 
-// Bias stencil away from boundary, no source at ghost/padding points
-   if( ic <= 2 )    ic = 3;
-   if( ic >= Ni-2 ) ic = Ni-3;
-   if( jc <= 2 )    jc = 3;
-   if( jc >= Nj-2 ) jc = Nj-3;
+  // Bias stencil away from boundary, no source at ghost/padding points
+  if( ic <= 2 )    ic = 3;
+  if( ic >= Ni-2 ) ic = Ni-3;
+  if( jc <= 2 )    jc = 3;
+  if( jc >= Nj-2 ) jc = Nj-3;
 
-// Six point stencil, with points, kc-2,..kc+3, Interior in domain
-// if kc-2>=1, kc+3 <= Nz --> kc >= 3 and kc <= Nz-3
-// Can evaluate with two ghost points if kc-2>=-1 and kc+3 <= Nz+2
-//  --->  kc >=1 and kc <= Nz-1
-//
-   if( kc >= Nz )
-      kc = Nz-1;
-   if( kc < 1 )
-      kc = 1;
+  // Six point stencil, with points, kc-2,..kc+3, Interior in domain
+  // if kc-2>=1, kc+3 <= Nz --> kc >= 3 and kc <= Nz-3
+  // Can evaluate with two ghost points if kc-2>=-1 and kc+3 <= Nz+2
+  //  --->  kc >=1 and kc <= Nz-1
+  //
+  if( kc >= Nz )
+    kc = Nz-1;
+  if( kc < 1 )
+    kc = 1;
 
-// upper(surface) and lower boundaries , when the six point stencil kc-2,..kc+3
-// make use of the first (k=1) or the last (k=Nz) interior point.
-   upperbndry = (kc == 1    || kc == 2    || kc == 3  );
-   lowerbndry = (kc == Nz-1 || kc == Nz-2 || kc == Nz-3 );
+  // upper(surface) and lower boundaries , when the six point stencil kc-2,..kc+3
+  // make use of the first (k=1) or the last (k=Nz) interior point.
+  upperbndry = (kc == 1    || kc == 2    || kc == 3  );
+  lowerbndry = (kc == Nz-1 || kc == Nz-2 || kc == Nz-3 );
 
-// ccbndry=true if at the interface between the curvilinear grid and the cartesian grid. 
-// Defined as the six point stencil uses values from both grids.
+  // ccbndry=true if at the interface between the curvilinear grid and the cartesian grid. 
+  // Defined as the six point stencil uses values from both grids.
 
-//   ccbndry = a_EW->topographyExists() &&  ( (upperbndry && g == a_EW->mNumberOfGrids-2) ||
-//                                            (lowerbndry && g == a_EW->mNumberOfGrids-1)    );
+  //   ccbndry = a_EW->topographyExists() &&  ( (upperbndry && g == a_EW->mNumberOfGrids-2) ||
+  //                                            (lowerbndry && g == a_EW->mNumberOfGrids-1)    );
 
-   ccbndry = a_EW->topographyExists() && ( (upperbndry && g == a_EW->mNumberOfCartesianGrids-1) ||
+  ccbndry = a_EW->topographyExists() && ( (upperbndry && g == a_EW->mNumberOfCartesianGrids-1) ||
                                            (lowerbndry && g == a_EW->mNumberOfCartesianGrids  )   );
 
-// gridrefbndry=true if at the interface between two grids of different refinements.
-   gridrefbndry = (upperbndry && g < a_EW->mNumberOfGrids-1 && !ccbndry) ||
+  // gridrefbndry=true if at the interface between two grids of different refinements.
+  gridrefbndry = (upperbndry && g < a_EW->mNumberOfGrids-1 && !ccbndry) ||
       (lowerbndry && g>0 && !ccbndry );
 
-   bool curvilinear_refbndry = gridrefbndry && g >= a_EW->mNumberOfCartesianGrids;
-   int ncurv = a_EW->mNumberOfGrids-a_EW->mNumberOfCartesianGrids;
-   bool cc_ic_bndry = ccbndry && !a_EW->m_gridGenerator->curviCartIsSmooth(ncurv);
-//
-// ********* do the filtering of the time function here as needed based on (ic, jc, kc) and gridrefbndry ******
-//      
+  bool curvilinear_refbndry = gridrefbndry && g >= a_EW->mNumberOfCartesianGrids;
+  int ncurv = a_EW->mNumberOfGrids-a_EW->mNumberOfCartesianGrids;
+  bool cc_ic_bndry = ccbndry && !a_EW->m_gridGenerator->curviCartIsSmooth(ncurv);
+  //
+  // ********* do the filtering of the time function here as needed based on (ic, jc, kc) and gridrefbndry ******
+  //      
 
-// AP: Jun 29, 2017: Since interior_point_in_proc only takes the (i,j)
-// indices into account, there is no point looping over
-// k. Furthermore, since this source belongs to this MPI task, it
-// needs to get initialized (filtered), unless it has already been done
-//
-   for( int j=jc-2 ; j <= jc+3 ; j++ )
-     for( int i=ic-2 ; i <= ic+3 ; i++ )
-     {
-// check if (i,j) belongs to this processor
-       if (a_EW->interior_point_in_proc(i,j,g) && !m_timeFuncIsReady) 
-       {
-// (optionally) filter and spline interpolate the time function in
-// this Source object, unless already done before
-	 prepareTimeFunc(a_EW->m_prefilter_sources, a_EW->getTimeStep(), a_EW->getNumberOfTimeSteps(),
-			 a_EW->m_filter_ptr);
-       }
-     }         
+  // AP: Jun 29, 2017: Since interior_point_in_proc only takes the (i,j)
+  // indices into account, there is no point looping over
+  // k. Furthermore, since this source belongs to this MPI task, it
+  // needs to get initialized (filtered), unless it has already been done
+  //
+  for( int j=jc-2 ; j <= jc+3 ; j++ )
+    for( int i=ic-2 ; i <= ic+3 ; i++ )
+    {
+      // check if (i,j) belongs to this processor
+      if (a_EW->interior_point_in_proc(i,j,g) && !m_timeFuncIsReady) 
+      {
+      //   cout << "check " << a_EW->interior_point_in_proc(i,j,g) << "and " << m_timeFuncIsReady << endl;
+        // (optionally) filter and spline interpolate the time function in
+        // this Source object, unless already done before
+        prepareTimeFunc(a_EW->m_prefilter_sources, a_EW->getTimeStep(), a_EW->getNumberOfTimeSteps(),
+        a_EW->m_filter_ptr);
+      }
+    }         
 
-// AP: Jun 29, 2017: The purpose of the following code is to make sure
-// the time function is properly initialized. This is important for
-// iDiscrete time functions, which have to be (optionally) filtered
-// and interpolated by a spline before they can be evaluated.
-//
-// Consider a source that is near a processor boundary and a grid
-// refinement boundary, but belongs to a neighboring processor. It is
-// possible that the source function also is needed on this processes,
-// because the 6-point source stencil extends further on a coarser
-// grid. In that case, we must also initialize the time function on
-// this process.
-   if (gridrefbndry) // near MR interface
-   {
-// compute (icref, jcref) (duplicated from below)
-      int icref, jcref;
-      int Niref, Njref;
-      float_sw4 qref, rref;
-      if( kc-1 < Nz-kc )
-      {
-         // kc closer to upper boundary. Source spread to finer grid above.
-         qref = mX0/(0.5*h)+1;
-         rref = mY0/(0.5*h)+1;
-         Niref = a_EW->m_global_nx[g+1];
-         Njref = a_EW->m_global_ny[g+1];
-      }
-      else
-      {
-         // kc closer to lower boundary. Source spread to coarser grid below.
-         qref = mX0/(2*h)+1;
-         rref = mY0/(2*h)+1;
-         Niref = a_EW->m_global_nx[g-1];
-         Njref = a_EW->m_global_ny[g-1];
-      }
-      icref = static_cast<int>(qref);
-      jcref = static_cast<int>(rref);
-      if( icref <= 2 ) icref = 3;
-      if( icref >= Niref-2 ) icref = Niref-3;
-      if( jcref <= 2 ) jcref = 3;
-      if( jcref >= Njref-2 ) jcref = Njref-3;
+  // AP: Jun 29, 2017: The purpose of the following code is to make sure
+  // the time function is properly initialized. This is important for
+  // iDiscrete time functions, which have to be (optionally) filtered
+  // and interpolated by a spline before they can be evaluated.
+  //
+  // Consider a source that is near a processor boundary and a grid
+  // refinement boundary, but belongs to a neighboring processor. It is
+  // possible that the source function also is needed on this processes,
+  // because the 6-point source stencil extends further on a coarser
+  // grid. In that case, we must also initialize the time function on
+  // this process.
+  if (gridrefbndry) // near MR interface
+  {
+    // compute (icref, jcref) (duplicated from below)
+    int icref, jcref;
+    int Niref, Njref;
+    float_sw4 qref, rref;
+    if( kc-1 < Nz-kc )
+    {
+        // kc closer to upper boundary. Source spread to finer grid above.
+        qref = mX0/(0.5*h)+1;
+        rref = mY0/(0.5*h)+1;
+        Niref = a_EW->m_global_nx[g+1];
+        Njref = a_EW->m_global_ny[g+1];
+    }
+    else
+    {
+        // kc closer to lower boundary. Source spread to coarser grid below.
+        qref = mX0/(2*h)+1;
+        rref = mY0/(2*h)+1;
+        Niref = a_EW->m_global_nx[g-1];
+        Njref = a_EW->m_global_ny[g-1];
+    }
+    icref = static_cast<int>(qref);
+    jcref = static_cast<int>(rref);
+    if( icref <= 2 ) icref = 3;
+    if( icref >= Niref-2 ) icref = Niref-3;
+    if( jcref <= 2 ) jcref = 3;
+    if( jcref >= Njref-2 ) jcref = Njref-3;
 // done computing (icref, jcref)         
-      for( int k=kc-2 ; k <= kc+3 ; k++ )
-      {
-         if( k <= 1 )
-         {
-            // Finer grid above
-            for( int j=jcref-2 ; j <= jcref+3 ; j++ )
-               for( int i=icref-2 ; i <= icref+3 ; i++ )
-               {
-                  if( a_EW->interior_point_in_proc(i,j,g+1) && !m_timeFuncIsReady) // checks if (i,j) belongs to this processor
-                  {
+    for( int k=kc-2 ; k <= kc+3 ; k++ )
+    {
+        if( k <= 1 )
+        {
+          // Finer grid above
+          for( int j=jcref-2 ; j <= jcref+3 ; j++ )
+              for( int i=icref-2 ; i <= icref+3 ; i++ )
+              {
+                if( a_EW->interior_point_in_proc(i,j,g+1) && !m_timeFuncIsReady) // checks if (i,j) belongs to this processor
+                {
 // filter the time function in this Source object, unless already done
-		     prepareTimeFunc(a_EW->m_prefilter_sources, a_EW->getTimeStep(),
-				     a_EW->getNumberOfTimeSteps(), a_EW->m_filter_ptr);
-                  }
-               }
-         } // end if k<=1
-         if( k >= Nz )
-         {
-            // Coarser grid below
-            for( int j=jcref-2 ; j <= jcref+3 ; j++ )
-               for( int i=icref-2 ; i <= icref+3 ; i++ )
-               {
-                  if( a_EW->interior_point_in_proc(i,j,g-1) && !m_timeFuncIsReady) // checks if (i,j) belongs to this processor
-                  {
+        prepareTimeFunc(a_EW->m_prefilter_sources, a_EW->getTimeStep(),
+            a_EW->getNumberOfTimeSteps(), a_EW->m_filter_ptr);
+                }
+              }
+        } // end if k<=1
+        if( k >= Nz )
+        {
+          // Coarser grid below
+          for( int j=jcref-2 ; j <= jcref+3 ; j++ )
+              for( int i=icref-2 ; i <= icref+3 ; i++ )
+              {
+                if( a_EW->interior_point_in_proc(i,j,g-1) && !m_timeFuncIsReady) // checks if (i,j) belongs to this processor
+                {
 // filter the time function in this Source object, unless already done
-		     prepareTimeFunc(a_EW->m_prefilter_sources, a_EW->getTimeStep(),
-				     a_EW->getNumberOfTimeSteps(), a_EW->m_filter_ptr);
-                  }
-               }
-         } // end if k >= Nz
-            
-      } // end for kc
-   } // end if near MR interface
+        prepareTimeFunc(a_EW->m_prefilter_sources, a_EW->getTimeStep(),
+            a_EW->getNumberOfTimeSteps(), a_EW->m_filter_ptr);
+                }
+              }
+        } // end if k >= Nz
+          
+    } // end for kc
+  } // end if near MR interface
       
-
 // If not at the interface between different grids, bias stencil away 
 // from the boundary.
    if( !ccbndry && !gridrefbndry )
@@ -2596,119 +2601,119 @@ void Source::perturb( float_sw4 h, int comp )
 //-----------------------------------------------------------------------
 void Source::filter_timefunc( Filter* filter_ptr, float_sw4 tstart, float_sw4 dt, int nsteps )
 {
-   if( !m_is_filtered )
-   {
-      float_sw4 (*timeFunc)(float_sw4 f, float_sw4 t,float_sw4* par, int npar, int* ipar, int nipar );
-      switch( mTimeDependence )
-      {
+  if( !m_is_filtered )
+  {
+    float_sw4 (*timeFunc)(float_sw4 f, float_sw4 t,float_sw4* par, int npar, int* ipar, int nipar );
+    switch( mTimeDependence )
+    {
       case iRicker:
-	 timeFunc = RickerWavelet;
-	 break;
+        timeFunc = RickerWavelet;
+        break;
       case iGaussian :
-	 timeFunc   = Gaussian;
-	 break;
+        timeFunc   = Gaussian;
+        break;
       case iRamp :
-	 timeFunc = Ramp;
-	 break;
+        timeFunc = Ramp;
+        break;
       case iTriangle :
-	 timeFunc = Triangle;
-	 break;
+        timeFunc = Triangle;
+        break;
       case iSawtooth :
-	 timeFunc = Sawtooth;
-	 break;
+        timeFunc = Sawtooth;
+        break;
       case iSmoothWave :
-	 timeFunc = SmoothWave;
-	 break;
+        timeFunc = SmoothWave;
+        break;
       case iErf :
-	 timeFunc = Erf;
-	 break;
+        timeFunc = Erf;
+        break;
       case iVerySmoothBump :
-	 timeFunc = VerySmoothBump;
-	 break;
+        timeFunc = VerySmoothBump;
+        break;
       case iC6SmoothBump :
-	 timeFunc = C6SmoothBump;
-	 break;
+        timeFunc = C6SmoothBump;
+        break;
       case iRickerInt :
-	 timeFunc = RickerInt;
-	 break;
+        timeFunc = RickerInt;
+        break;
       case iBrune :
-	 timeFunc = Brune;
-	 break;
+        timeFunc = Brune;
+        break;
       case iBruneSmoothed :
-	 timeFunc = BruneSmoothed;
-	 break;
+        timeFunc = BruneSmoothed;
+        break;
       case iDBrune :
-	 timeFunc = DBrune;
-	 break;
+        timeFunc = DBrune;
+        break;
       case iGaussianWindow :
-	 timeFunc = GaussianWindow;
-	 break;
+        timeFunc = GaussianWindow;
+        break;
       case iLiu :
-	 timeFunc = Liu;
-	 break;
+        timeFunc = Liu;
+        break;
       case iDirac :
-	 timeFunc = Dirac;
-	 break;
-// discrete time functions are now handled differently
+        timeFunc = Dirac;
+        break;
+      // discrete time functions are now handled differently
       // case iDiscrete :
       //    timeFunc = Discrete;
       //    break;
       default:
-	 cout << "ERROR in Source::filter_timefunc, source type not recoginzed" << endl;
+      cout << "ERROR in Source::filter_timefunc, source type not recognized" << endl;
+    }
+
+    // Convert to discrete representation
+    mTimeDependence = iDiscrete;
+
+    float_sw4 *discfunc = new float_sw4[nsteps];
+    for (int k=0; k < nsteps; k++ )
+      discfunc[k] = timeFunc( mFreq, tstart+k*dt-mT0, mPar, mNpar, mIpar, mNipar );
+
+    // Filter the discretized function 
+    filter_ptr->evaluate( nsteps, &discfunc[0], &discfunc[0] );
+
+    // Give the source time function a smooth start if this is a 2-pass (forward + backward) bandpass filter
+    if( filter_ptr->get_passes() == 2 && filter_ptr->get_type() == bandPass )
+    {    
+      float_sw4 wghv, xi;
+      int p0=3, p=20 ; // First non-zero time level, and number of points in ramp;
+      if( p0+p <= nsteps )
+      {
+        for( int i=1 ; i<=p0-1 ; i++ )
+        {
+          discfunc[i-1] = 0;
+        }
+        for( int i=p0 ; i<=p0+p ; i++ )
+        {
+          wghv = 0;
+          xi = (i-p0)/((float_sw4) p);
+          // polynomial P(xi), P(0) = 0, P(1)=1
+          wghv = xi*xi*xi*xi*(35-84*xi+70*xi*xi-20*xi*xi*xi);
+          discfunc[i-1] *=wghv;
+        }
       }
+    }
 
-      // Convert to discrete representation
-      mTimeDependence = iDiscrete;
+    // Save discrete function
+    mNipar = 1;
+    mIpar = new int[mNipar];
+    mIpar[0] = nsteps;
 
-      float_sw4 *discfunc = new float_sw4[nsteps];
-      for (int k=0; k < nsteps; k++ )
-	 discfunc[k] = timeFunc( mFreq, tstart+k*dt-mT0, mPar, mNpar, mIpar, mNipar );
+    mFreq = 1./dt;   
+    delete[] mPar;
+    mNpar = nsteps+1;
+    mPar = new float_sw4[mNpar];
+    mPar[0] = tstart; // regular (like Gaussian) time functions are defined from t=tstart=0
+    mT0 = tstart;
+    //      mPar[0] = tstart-mT0;
+    for( int i=0 ; i < nsteps; i++ )
+      mPar[i+1] = discfunc[i];
+    delete[] discfunc;
 
-// Filter the discretized function 
-      filter_ptr->evaluate( nsteps, &discfunc[0], &discfunc[0] );
-
-// Give the source time function a smooth start if this is a 2-pass (forward + backward) bandpass filter
-      if( filter_ptr->get_passes() == 2 && filter_ptr->get_type() == bandPass )
-      {    
-	 float_sw4 wghv, xi;
-	 int p0=3, p=20 ; // First non-zero time level, and number of points in ramp;
-	 if( p0+p <= nsteps )
-	 {
-	    for( int i=1 ; i<=p0-1 ; i++ )
-	    {
-	       discfunc[i-1] = 0;
-	    }
-	    for( int i=p0 ; i<=p0+p ; i++ )
-	    {
-	       wghv = 0;
-	       xi = (i-p0)/((float_sw4) p);
-	 // polynomial P(xi), P(0) = 0, P(1)=1
-	       wghv = xi*xi*xi*xi*(35-84*xi+70*xi*xi-20*xi*xi*xi);
-	       discfunc[i-1] *=wghv;
-	    }
-	 }
-      }
-
-   // Save discrete function
-      mNipar = 1;
-      mIpar = new int[mNipar];
-      mIpar[0] = nsteps;
-
-      mFreq = 1./dt;   
-      delete[] mPar;
-      mNpar = nsteps+1;
-      mPar = new float_sw4[mNpar];
-      mPar[0] = tstart; // regular (like Gaussian) time functions are defined from t=tstart=0
-      mT0 = tstart;
-//      mPar[0] = tstart-mT0;
-      for( int i=0 ; i < nsteps; i++ )
-         mPar[i+1] = discfunc[i];
-      delete[] discfunc;
-
-   // Build the spline representation
-      spline_interpolation();
-      m_is_filtered = true;
-   }
+    // Build the spline representation
+    spline_interpolation();
+    m_is_filtered = true;
+  }
 }
 
 //-----------------------------------------------------------------------
@@ -2732,7 +2737,8 @@ int Source::spline_interpolation( )
       // 	for( int i=0 ; i < npts ; i++ )
       // 	  cout << "fun[" << i << "] = "<< mPar[i+1] << endl;
       // }
-      
+// endtmp
+
       Qspline quinticspline( npts, &mPar[1], mPar[0], 1/mFreq );
       float_sw4 tstart = mPar[0];
       delete[] mPar;
@@ -2742,9 +2748,24 @@ int Source::spline_interpolation( )
       float_sw4* qsppt = quinticspline.get_polycof_ptr();
       for( int i=0 ; i < 6*(npts-1) ; i++ )
          mPar[i+1] = qsppt[i];
-      //      cout << "after spline interp" << endl;
-      //      for( int i=0 ; i < npts ; i++ )
-      //	 cout << "fun[" << i << "] = "<< mPar[6*i+1] << endl;
+
+      //tmp
+      // cout << "PROCESSING IN RANK: " << myRank << " tf:" << m_is_filtered << " " << m_timeFuncIsReady << " mpar[3]=" << mPar[3] << endl;
+      // if (myRank == 0)
+      // {
+      // cout << "after spline interp" << endl;
+      // for( int i=0 ; i < npts ; i++ )
+      // {
+      //    cout << "fun[" << i << "] = "<< mPar[6*i+1] << endl;
+      //    cout << "fun[" << i << ".1] = "<< mPar[6*i+1+1] << endl;
+      //    cout << "fun[" << i << ".2] = "<< mPar[6*i+1+2] << endl;
+      //    cout << "fun[" << i << ".3] = "<< mPar[6*i+1+3] << endl;
+      //    cout << "fun[" << i << ".4] = "<< mPar[6*i+1+4] << endl;
+      //    cout << "fun[" << i << ".5] = "<< mPar[6*i+1+5] << endl;
+      // }
+         
+      // }
+      //endtmp
       
       return 1;
    }
@@ -3543,6 +3564,7 @@ void Source::get_mr_psources( EW* a_EW, int g, float_sw4 q, float_sw4 r,
    int ssize=125, one=1, info=0, nb=20;
    int lwork=ncond+ncond*nb;
    float_sw4* work = new float_sw4[lwork];
+
    F77_FUNC(dgels,DGELS)( tr, ncond, ssize, nrhs, a_, ncond, b_, ldb, 
                           work, lwork, info );
    delete[] work;

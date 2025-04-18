@@ -387,7 +387,7 @@ void ESSI3DHDF5::init_write_vel(bool isRestart, int ntimestep,
 
     if (myRank == 0) {
       /* if (debug && myRank == 0) { */
-      printf("SSI ouput chunk sizes:");
+      printf("SSI output chunk sizes:");
       for (int i = 0; i < num_dims; i++) printf("%llu  ", my_chunk[i]);
       printf("\n");
       fflush(stdout);

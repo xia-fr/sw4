@@ -71,14 +71,14 @@ void memvar_pred_fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
    const size_t nijk= nij*(klast-kfirst+1);
    const int base = -ifirst-ni*jfirst-nij*kfirst;
    for( int c=0 ; c < 3 ;c++)
-#pragma omp parallel for
+   #pragma omp parallel for
       for( int k=k1 ; k <= k2 ; k++)
-	 for( int j=jfirst ; j<= jlast; j++ )
-	    for( int i=ifirst ; i<= ilast; i++ )
-	    {
-	       size_t ind = base+i+ni*j+nij*k;
-	       alp[ind+c*nijk] = icp*(-cm*alm[ind+c*nijk] + u[ind+c*nijk] );
-	    }
+      for( int j=jfirst ; j<= jlast; j++ )
+      for( int i=ifirst ; i<= ilast; i++ )
+      {
+         size_t ind = base+i+ni*j+nij*k;
+         alp[ind+c*nijk] = icp*(-cm*alm[ind+c*nijk] + u[ind+c*nijk] );
+      }
 }
 
 //-----------------------------------------------------------------------

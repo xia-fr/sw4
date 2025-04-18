@@ -65,193 +65,260 @@ void add_pseudohessian_terms2( int ifirst, int ilast, int jfirst, int jlast,
 
 //--------------------------------------------------------------------
 void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
-		vector<Sarray>& a_Mu, vector<Sarray>& a_Lambda, vector<Sarray>& a_Rho,
-		vector<Sarray>& U, vector<Sarray>& Um,
-		vector<DataPatches*>& Upred_saved_sides,
-   		vector<DataPatches*>& Ucorr_saved_sides, bool save_sides,
-		int event, int nsteps_in_memory, int varcase, vector<Sarray>& PseudoHessian )
+  vector<Sarray>& a_Mu, vector<Sarray>& a_Lambda, vector<Sarray>& a_Rho,
+  vector<Sarray>& U, vector<Sarray>& Um,
+  vector<DataPatches*>& Upred_saved_sides,
+  vector<DataPatches*>& Ucorr_saved_sides, bool save_sides,
+  int event, int nsteps_in_memory, int varcase, vector<Sarray>& PseudoHessian )
 {
-   // Experimental
+  // Experimental
   //   int nsteps_in_memory=50;
-// solution arrays
-   vector<Sarray> F, Lu, Uacc, Up;
-   vector<Sarray*> AlphaVE, AlphaVEm, AlphaVEp;
-// vectors of pointers to hold boundary forcing arrays in each grid
-   vector<float_sw4**> BCForcing;
+  // solution arrays
+  vector<Sarray> F, Lu, Uacc, Up;
+  vector<Sarray*> AlphaVE, AlphaVEm, AlphaVEp;
+  // vectors of pointers to hold boundary forcing arrays in each grid
+  vector<float_sw4**> BCForcing;
 
-   BCForcing.resize(mNumberOfGrids);
-   F.resize(mNumberOfGrids);
-   Lu.resize(mNumberOfGrids);
-   Uacc.resize(mNumberOfGrids);
-   Up.resize(mNumberOfGrids);
-   Um.resize(mNumberOfGrids);
-   U.resize(mNumberOfGrids);
+  BCForcing.resize(mNumberOfGrids);
+  F.resize(mNumberOfGrids);
+  Lu.resize(mNumberOfGrids);
+  Uacc.resize(mNumberOfGrids);
+  Up.resize(mNumberOfGrids);
+  Um.resize(mNumberOfGrids);
+  U.resize(mNumberOfGrids);
 
-// Allocate pointers, even if attenuation not used, to avoid segfault in parameter list with mMuVE[g], etc...
-   AlphaVE.resize(mNumberOfGrids);
-   AlphaVEm.resize(mNumberOfGrids);
-   AlphaVEp.resize(mNumberOfGrids);
-   if (m_use_attenuation && m_number_mechanisms > 0)
-   {
+  // Allocate pointers, even if attenuation not used, to avoid segfault in parameter list with mMuVE[g], etc...
+  AlphaVE.resize(mNumberOfGrids);
+  AlphaVEm.resize(mNumberOfGrids);
+  AlphaVEp.resize(mNumberOfGrids);
+  if (m_use_attenuation && m_number_mechanisms > 0)
+  {
+    for( int g = 0; g <mNumberOfGrids; g++ )
+    {
+      AlphaVE[g]  = new Sarray[m_number_mechanisms];
+      AlphaVEp[g] = new Sarray[m_number_mechanisms];
+      AlphaVEm[g] = new Sarray[m_number_mechanisms];
+    }
+  }
+
+  int eglobal=local_to_global_event(event);
+  int ifirst, ilast, jfirst, jlast, kfirst, klast;
+  for( int g = 0; g <mNumberOfGrids; g++ )
+  {
+    BCForcing[g] = new float_sw4 *[6];
+    for (int side=0; side < 6; side++)
+    {
+      BCForcing[g][side]=NULL;
+      if (m_bcType[g][side] == bStressFree || m_bcType[g][side] == bDirichlet || m_bcType[g][side] == bSuperGrid)
+      {
+        BCForcing[g][side] = new float_sw4[3*m_NumberOfBCPoints[g][side]];
+      }
+    }
+    ifirst = m_iStart[g];
+    ilast = m_iEnd[g];
+    jfirst = m_jStart[g];
+    jlast = m_jEnd[g];
+    kfirst = m_kStart[g];
+    klast = m_kEnd[g];
+    F[g].define(3,ifirst,ilast,jfirst,jlast,kfirst,klast);
+    Lu[g].define(3,ifirst,ilast,jfirst,jlast,kfirst,klast);
+    Uacc[g].define(3,ifirst,ilast,jfirst,jlast,kfirst,klast);
+    Up[g].define(3,ifirst,ilast,jfirst,jlast,kfirst,klast);
+    Um[g].define(3,ifirst,ilast,jfirst,jlast,kfirst,klast);
+    U[g].define(3,ifirst,ilast,jfirst,jlast,kfirst,klast);
+    //
+    F[g].set_to_zero();
+    Lu[g].set_to_zero();
+    Uacc[g].set_to_zero();
+    Up[g].set_to_zero();
+    Um[g].set_to_zero();
+    U[g].set_to_zero();
+    if (m_use_attenuation && m_number_mechanisms > 0)
+    {
+      for (int a=0; a<m_number_mechanisms; a++)
+      {
+        AlphaVE[g][a].define( 3,ifirst,ilast,jfirst,jlast,kfirst,klast);
+        AlphaVEp[g][a].define(3,ifirst,ilast,jfirst,jlast,kfirst,klast);
+        AlphaVEm[g][a].define(3,ifirst,ilast,jfirst,jlast,kfirst,klast);
+        AlphaVE[g][a].set_to_zero();
+        AlphaVEp[g][a].set_to_zero();
+        AlphaVEm[g][a].set_to_zero();
+      }
+    }
+  }
+  // done allocating solution arrays
+
+  // DRM SOLUTION ARRAYS
+  vector<Sarray> U_drm, Up_drm, Um_drm, Utt_drm;
+  vector<Sarray> F_drm, Lu_drm;
+  vector<Sarray*> AlphaVE_drm, AlphaVEp_drm, AlphaVEm_drm;
+  if ( m_use_DRM ){
+    Up_drm.resize(mNumberOfGrids);
+    Um_drm.resize(mNumberOfGrids);
+    U_drm.resize(mNumberOfGrids);
+    Utt_drm.resize(mNumberOfGrids);
+
+    F_drm.resize(mNumberOfGrids);
+    Lu_drm.resize(mNumberOfGrids);
+
+    AlphaVE_drm.resize(mNumberOfGrids);
+    AlphaVEp_drm.resize(mNumberOfGrids);
+    AlphaVEm_drm.resize(mNumberOfGrids);
+    if (m_use_attenuation && m_number_mechanisms > 0)
+    {
       for( int g = 0; g <mNumberOfGrids; g++ )
       {
-	 AlphaVE[g]  = new Sarray[m_number_mechanisms];
-	 AlphaVEp[g] = new Sarray[m_number_mechanisms];
-	 AlphaVEm[g] = new Sarray[m_number_mechanisms];
+        AlphaVE_drm[g]  = new Sarray[m_number_mechanisms];
+        AlphaVEp_drm[g]  = new Sarray[m_number_mechanisms];
+        AlphaVEm_drm[g]  = new Sarray[m_number_mechanisms];
       }
-   }
+    }
 
-   int eglobal=local_to_global_event(event);
-   int ifirst, ilast, jfirst, jlast, kfirst, klast;
-   for( int g = 0; g <mNumberOfGrids; g++ )
-   {
-      BCForcing[g] = new float_sw4 *[6];
-      for (int side=0; side < 6; side++)
-      {
-	 BCForcing[g][side]=NULL;
-	 if (m_bcType[g][side] == bStressFree || m_bcType[g][side] == bDirichlet || m_bcType[g][side] == bSuperGrid)
-	 {
-	    BCForcing[g][side] = new float_sw4[3*m_NumberOfBCPoints[g][side]];
-	 }
-      }
+    for( int g = 0; g < mNumberOfGrids; g++ ){
       ifirst = m_iStart[g];
       ilast = m_iEnd[g];
       jfirst = m_jStart[g];
       jlast = m_jEnd[g];
       kfirst = m_kStart[g];
       klast = m_kEnd[g];
-      F[g].define(3,ifirst,ilast,jfirst,jlast,kfirst,klast);
-      Lu[g].define(3,ifirst,ilast,jfirst,jlast,kfirst,klast);
-      Uacc[g].define(3,ifirst,ilast,jfirst,jlast,kfirst,klast);
-      Up[g].define(3,ifirst,ilast,jfirst,jlast,kfirst,klast);
-      Um[g].define(3,ifirst,ilast,jfirst,jlast,kfirst,klast);
-      U[g].define(3,ifirst,ilast,jfirst,jlast,kfirst,klast);
-      //
-      F[g].set_to_zero();
-      Lu[g].set_to_zero();
-      Uacc[g].set_to_zero();
-      Up[g].set_to_zero();
-      Um[g].set_to_zero();
-      U[g].set_to_zero();
+
+      Up_drm[g].define(3,ifirst,ilast,jfirst,jlast,kfirst,klast);
+      Um_drm[g].define(3,ifirst,ilast,jfirst,jlast,kfirst,klast);
+      U_drm[g].define(3,ifirst,ilast,jfirst,jlast,kfirst,klast);
+      Utt_drm[g].define(3,ifirst,ilast,jfirst,jlast,kfirst,klast);
+
+      F_drm[g].define(3,ifirst,ilast,jfirst,jlast,kfirst,klast);
+      Lu_drm[g].define(3,ifirst,ilast,jfirst,jlast,kfirst,klast);
+
+      Up_drm[g].set_to_zero();
+      Um_drm[g].set_to_zero();
+      U_drm[g].set_to_zero();
+      Utt_drm[g].set_to_zero();
+
+      F_drm[g].set_to_zero();
+      Lu_drm[g].set_to_zero();
+
       if (m_use_attenuation && m_number_mechanisms > 0)
       {
-	 for (int a=0; a<m_number_mechanisms; a++)
-	 {
-	    AlphaVE[g][a].define( 3,ifirst,ilast,jfirst,jlast,kfirst,klast);
-	    AlphaVEp[g][a].define(3,ifirst,ilast,jfirst,jlast,kfirst,klast);
-	    AlphaVEm[g][a].define(3,ifirst,ilast,jfirst,jlast,kfirst,klast);
-	    AlphaVE[g][a].set_to_zero();
-	    AlphaVEp[g][a].set_to_zero();
-	    AlphaVEm[g][a].set_to_zero();
-	 }
+        for (int a=0; a<m_number_mechanisms; a++)
+        {
+          AlphaVE_drm[g][a].define( 3,ifirst,ilast,jfirst,jlast,kfirst,klast);
+          AlphaVEp_drm[g][a].define( 3,ifirst,ilast,jfirst,jlast,kfirst,klast);
+          AlphaVEm_drm[g][a].define( 3,ifirst,ilast,jfirst,jlast,kfirst,klast);
+
+          AlphaVE_drm[g][a].set_to_zero();
+          AlphaVEp_drm[g][a].set_to_zero();
+          AlphaVEm_drm[g][a].set_to_zero();
+        }
       }
+    }
+  }
+  // END DRM SOLUTION ARRAYS
+
+  // Setup Cartesian grid refinement interface.
+  setup_MR_coefficients( a_Rho, a_Mu, a_Lambda );
+
+  // Setup curvilinear grid refinement interface
+  for( int g=mNumberOfCartesianGrids ; g < mNumberOfGrids-1 ; g++ )
+    m_cli2[g-mNumberOfCartesianGrids]->init_arrays( m_sg_str_x, m_sg_str_y,
+                                                    a_Rho, a_Mu, a_Lambda );
+
+  // Allocate boundary sides
+  for( int g=0 ; g < mNumberOfGrids ; g++ ){
+    stringstream procno;
+    procno << m_myRank << "." << g << ".ev" << eglobal; 
+    //     string logname(getlogin());
+
+    // Local disks on LC seem to be setup with directory /tmp/username when user username starts a job
+    string upred_name = mTempPath + "upred" + procno.str() + ".bin";
+    string ucorr_name = mTempPath + "ucorr" + procno.str() + ".bin";
+    mkdirs(mTempPath);
+    //     string upred_name = "/tmp/" + logname + "/upred" + procno.str() + ".bin";
+    //     string ucorr_name = "/tmp/" + logname + "/ucorr" + procno.str() + ".bin";
+    int imin, imax, jmin, jmax, kmax, kmin;
+    imin = m_iStartActGlobal[g]-1;
+    imax = m_iEndActGlobal[g]+1;
+    jmin = m_jStartActGlobal[g]-1;
+    jmax = m_jEndActGlobal[g]+1;
+    kmin = m_kStartActGlobal[g]-1;
+    kmax = m_kEndActGlobal[g]+1;
+    int npad[6]={0,0,0,0,0,0};
+    if( m_iStart[g] > 1 )
+        npad[0] = m_ppadding;
+    if( m_iEnd[g] < m_global_nx[g] )
+        npad[1] = m_ppadding;
+    if( m_jStart[g] > 1 )
+        npad[2] = m_ppadding;
+    if( m_jEnd[g] < m_global_ny[g] )
+        npad[3] = m_ppadding;
+    if( g != mNumberOfGrids-1 )
+    {
+        // Upper boundary is grid ref bndry.
+        kmin += 2;
+    }
+    if( g != 0 )
+    {
+        // Lower boundary is grid ref bndry.
+        kmax -= 2;
+    }
+    if( save_sides )
+    {
+      bool top = g <mNumberOfGrids-1;
+      Upred_saved_sides[g] = new DataPatches( upred_name.c_str() ,U[g],imin,imax,jmin,jmax,kmin,kmax,2,nsteps_in_memory,mDt,npad, top, true );
+      Ucorr_saved_sides[g] = new DataPatches( ucorr_name.c_str() ,U[g],imin,imax,jmin,jmax,kmin,kmax,2,nsteps_in_memory,mDt,npad, top, true );
+        //     cout << "sides saved for i=[" << imin << " , " << imax << "] j=[" << jmin << " , " << jmax << "] k=[" << 1 << " , " << kmax << "]"<< endl;
+      size_t maxsizeloc = Upred_saved_sides[g]->get_noofpoints();
+      size_t maxsize;
+      int mpisizelong, mpisizelonglong, mpisizeint;
+      MPI_Type_size(MPI_LONG,&mpisizelong );
+      MPI_Type_size(MPI_LONG_LONG,&mpisizelonglong );
+      MPI_Type_size(MPI_INT,&mpisizeint );
+      if( sizeof(size_t) == mpisizelong )
+        MPI_Allreduce( &maxsizeloc, &maxsize, 1, MPI_LONG, MPI_MAX, m_1d_communicator );
+      else if( sizeof(size_t) == mpisizelonglong )
+        MPI_Allreduce( &maxsizeloc, &maxsize, 1, MPI_LONG_LONG, MPI_MAX, m_1d_communicator );
+      else if( sizeof(size_t) == mpisizeint )
+        MPI_Allreduce( &maxsizeloc, &maxsize, 1, MPI_INT, MPI_MAX, m_1d_communicator );
+      if( !mQuiet && mVerbose >= 5 && proc_zero() )
+        cout << "  Temporary files " << upred_name << " and " << ucorr_name << " will hold " <<
+            Upred_saved_sides[g]->get_noofpoints() << " values each, for each time step";
+      if( !mQuiet && proc_zero() && mVerbose >= 3 )
+        cout << "Maximum temporary file size on grid " << g << " is " << maxsize << " doubles for each time step "<<endl;
+    }
    }
-// done allocating solution arrays
 
-// Setup Cartesian grid refinement interface.
-   setup_MR_coefficients( a_Rho, a_Mu, a_Lambda );
-
-// Setup curvilinear grid refinement interface
-   for( int g=mNumberOfCartesianGrids ; g < mNumberOfGrids-1 ; g++ )
-      m_cli2[g-mNumberOfCartesianGrids]->init_arrays( m_sg_str_x, m_sg_str_y,
-                                                      a_Rho, a_Mu, a_Lambda );
-
-// Allocate boundary sides
-   for( int g=0 ; g < mNumberOfGrids ; g++ )   {
-      stringstream procno;
-      procno << m_myRank << "." << g << ".ev" << eglobal; 
-     //     string logname(getlogin());
-
-// Local disks on LC seem to be setup with directory /tmp/username when user username starts a job
-      string upred_name = mTempPath + "upred" + procno.str() + ".bin";
-      string ucorr_name = mTempPath + "ucorr" + procno.str() + ".bin";
-      mkdirs(mTempPath);
-      //     string upred_name = "/tmp/" + logname + "/upred" + procno.str() + ".bin";
-      //     string ucorr_name = "/tmp/" + logname + "/ucorr" + procno.str() + ".bin";
-      int imin, imax, jmin, jmax, kmax, kmin;
-      imin = m_iStartActGlobal[g]-1;
-      imax = m_iEndActGlobal[g]+1;
-      jmin = m_jStartActGlobal[g]-1;
-      jmax = m_jEndActGlobal[g]+1;
-      kmin = m_kStartActGlobal[g]-1;
-      kmax = m_kEndActGlobal[g]+1;
-      int npad[6]={0,0,0,0,0,0};
-      if( m_iStart[g] > 1 )
-         npad[0] = m_ppadding;
-      if( m_iEnd[g] < m_global_nx[g] )
-         npad[1] = m_ppadding;
-      if( m_jStart[g] > 1 )
-         npad[2] = m_ppadding;
-      if( m_jEnd[g] < m_global_ny[g] )
-         npad[3] = m_ppadding;
-      if( g != mNumberOfGrids-1 )
-      {
-         // Upper boundary is grid ref bndry.
-         kmin += 2;
-      }
-      if( g != 0 )
-      {
-         // Lower boundary is grid ref bndry.
-         kmax -= 2;
-      }
-      if( save_sides )
-      {
-         bool top = g <mNumberOfGrids-1;
-	 Upred_saved_sides[g] = new DataPatches( upred_name.c_str() ,U[g],imin,imax,jmin,jmax,kmin,kmax,2,nsteps_in_memory,mDt,npad, top, true );
-	 Ucorr_saved_sides[g] = new DataPatches( ucorr_name.c_str() ,U[g],imin,imax,jmin,jmax,kmin,kmax,2,nsteps_in_memory,mDt,npad, top, true );
-     //     cout << "sides saved for i=[" << imin << " , " << imax << "] j=[" << jmin << " , " << jmax << "] k=[" << 1 << " , " << kmax << "]"<< endl;
-	 size_t maxsizeloc = Upred_saved_sides[g]->get_noofpoints();
-	 size_t maxsize;
-	 int mpisizelong, mpisizelonglong, mpisizeint;
-	 MPI_Type_size(MPI_LONG,&mpisizelong );
-	 MPI_Type_size(MPI_LONG_LONG,&mpisizelonglong );
-	 MPI_Type_size(MPI_INT,&mpisizeint );
-	 if( sizeof(size_t) == mpisizelong )
-	    MPI_Allreduce( &maxsizeloc, &maxsize, 1, MPI_LONG, MPI_MAX, m_1d_communicator );
-	 else if( sizeof(size_t) == mpisizelonglong )
-	    MPI_Allreduce( &maxsizeloc, &maxsize, 1, MPI_LONG_LONG, MPI_MAX, m_1d_communicator );
-	 else if( sizeof(size_t) == mpisizeint )
-	    MPI_Allreduce( &maxsizeloc, &maxsize, 1, MPI_INT, MPI_MAX, m_1d_communicator );
-	 if( !mQuiet && mVerbose >= 5 && proc_zero() )
-	    cout << "  Temporary files " << upred_name << " and " << ucorr_name << " will hold " <<
-	       Upred_saved_sides[g]->get_noofpoints() << " values each, for each time step";
-	 if( !mQuiet && proc_zero() && mVerbose >= 3 )
-	    cout << "Maximum temporary file size on grid " << g << " is " << maxsize << " doubles for each time step "<<endl;
-      }
-   }
-
-// Set the number of time steps, allocate the recording arrays, and set reference time in all time series objects  
-/* #pragma omp parallel for */
-   for (int ts=0; ts<a_TimeSeries.size(); ts++)
-   {
-      a_TimeSeries[ts]->allocateRecordingArrays( mNumberOfTimeSteps[event]+1, mTstart, mDt); // AP: added one to mNumber...
-            
-   // In forward solve, the output receivers will use the same UTC as the
-      // global reference utc0, therefore, set station utc equal reference utc.
-      //     if( m_utc0set )
-      //	a_TimeSeries[ts]->set_station_utc( m_utc0 );
-   }
+  // Set the number of time steps, allocate the recording arrays, and set reference time in all time series objects  
+  /* #pragma omp parallel for */
+  for (int ts=0; ts<a_TimeSeries.size(); ts++)
+  {
+    a_TimeSeries[ts]->allocateRecordingArrays( mNumberOfTimeSteps[event]+1, mTstart, mDt); // AP: added one to mNumber...
+          
+    // In forward solve, the output receivers will use the same UTC as the
+    // global reference utc0, therefore, set station utc equal reference utc.
+    //     if( m_utc0set )
+    //	a_TimeSeries[ts]->set_station_utc( m_utc0 );
+  }
   
   if( !mQuiet && mVerbose >=3 && proc_zero() )
     printf("***  Allocated all receiver time series\n");
 
-// Reset image time to zero, in case we are rerunning the solver
+  // Reset image time to zero, in case we are rerunning the solver
   for (unsigned int fIndex = 0; fIndex < mImageFiles.size(); ++fIndex)
-     mImageFiles[fIndex]->initializeTime();
+    mImageFiles[fIndex]->initializeTime();
 
-// the Source objects get discretized into GridPointSource objects
+  // the Source objects get discretized into GridPointSource objects
   vector<GridPointSource*> point_sources;
 
   if( m_point_source_test )
-     m_point_source_test->set_source( a_Sources[0] );
+    m_point_source_test->set_source( a_Sources[0] );
 
-// Transfer source terms to each individual grid as point sources at grid points.
+  // Transfer source terms to each individual grid as point sources at grid points.
   for( unsigned int i=0 ; i < a_Sources.size() ; i++ )
-      a_Sources[i]->set_grid_point_sources4( this, point_sources );
+    a_Sources[i]->set_grid_point_sources4( this, point_sources );
 
   //  std::cout << m_myRank << " no of sources = " << point_sources.size() << std::endl;
   //  std::cout << m_myRank << " no of receivers = " << a_TimeSeries.size() << std::endl;
- // Debug
+  // Debug
   // for (int proc = 0; proc<m_nProcs; proc++)
   //    if (proc == m_myRank)
   //    {
@@ -262,64 +329,59 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
   //       }
   //       printf("\n**** MPI-task #%d needs %d source terms  ********\n\n", proc, nSources);     
   // }
-// end debug
-  
-// modification of time functions by prefiltering is currently done in preprocessSources()
+  // end debug
+
+  // modification of time functions by prefiltering is currently done in preprocessSources()
   // only reported here
   if (!m_testing && m_prefilter_sources)
   {
     if (!mQuiet && proc_zero() )
     {
       if (m_filter_ptr->get_type()==lowPass)
-	printf("Lowpass filtering all source time functions to corner frequency fc2=%e\n", 
-	       m_filter_ptr->get_corner_freq2());
+        printf("Lowpass filtering all source time functions to corner frequency fc2=%e\n", 
+               m_filter_ptr->get_corner_freq2());
       else if (m_filter_ptr->get_type()==bandPass)
-	printf("Bandpass filtering all source time functions to corner frequencies fc1=%e and fc2=%e\n", 
-	       m_filter_ptr->get_corner_freq1(), m_filter_ptr->get_corner_freq2());
+        printf("Bandpass filtering all source time functions to corner frequencies fc1=%e and fc2=%e\n", 
+               m_filter_ptr->get_corner_freq1(), m_filter_ptr->get_corner_freq2());
     }
   } // end if prefiltering
 
-// AP changed to false
+  // AP changed to false
   bool output_timefunc = false;
   if( output_timefunc )
   {
-     int has_source_id=-1, has_source_max;
-     if( point_sources.size() > 0 )
-	has_source_id = m_myRank;
+    int has_source_id=-1, has_source_max;
+    if( point_sources.size() > 0 )
+      has_source_id = m_myRank;
 
-     MPI_Allreduce( &has_source_id, &has_source_max, 1, MPI_INT, MPI_MAX, m_cartesian_communicator );
-     if( m_myRank == has_source_max )
-     {
-       if (!mQuiet && mVerbose >=1 )
-	 printf("*** Saving one discretized time function ***\n");
+    MPI_Allreduce( &has_source_id, &has_source_max, 1, MPI_INT, MPI_MAX, m_cartesian_communicator );
+    if( m_myRank == has_source_max )
+    {
+      if (!mQuiet && mVerbose >=1 )
+      printf("*** Saving one discretized time function ***\n");
 
-// tmp
-       // printf("mTstart = %e, mDt = %e\n", mTstart, mDt);
-       // printf("GridPointSource::mT0 = %e\n", point_sources[0]->mT0);
-// end tmp
-       
-//building the file name...
-       string filename;
-       if( mPath[eglobal] != "." )
-	 filename += mPath[eglobal];
-       filename += "g1.dat";	 
+      // tmp
+            // printf("mTstart = %e, mDt = %e\n", mTstart, mDt);
+            // printf("GridPointSource::mT0 = %e\n", point_sources[0]->mT0);
+      // end tmp
 
-       FILE *tf=fopen(filename.c_str(),"w");
-       float_sw4 t;
-       float_sw4 gt, gt1, gt2;
-       for (int i=0; i<=mNumberOfTimeSteps[event]; i++)
-       {
-	 //           for( int sb=0 ; sb < 10 ; sb++ )
-	 //	   {
-	 //	      t = mTstart + i*mDt + 0.1*sb*mDt;
-	 t = mTstart + i*mDt;
-	 gt = point_sources[0]->getTimeFunc(t);
-	 gt1 = point_sources[0]->evalTimeFunc_t(t);
-	 gt2 = point_sources[0]->evalTimeFunc_tt(t);
-	 fprintf(tf, "%.18e  %.18e  %.18e  %.18e\n", t, gt, gt1, gt2);
-	 //	   }
-       }
-       fclose(tf);
+      //building the file name...
+      string filename;
+      if( mPath[eglobal] != "." )
+        filename += mPath[eglobal];
+      filename += "g1.dat";
+
+      FILE *tf=fopen(filename.c_str(),"w");
+      float_sw4 t;
+      float_sw4 gt, gt1, gt2;
+      for (int i=0; i<=mNumberOfTimeSteps[event]; i++){
+        t = mTstart + i*mDt;
+        gt = point_sources[0]->getTimeFunc(t);
+        gt1 = point_sources[0]->evalTimeFunc_t(t);
+        gt2 = point_sources[0]->evalTimeFunc_tt(t);
+        fprintf(tf, "%.18e  %.18e  %.18e  %.18e\n", t, gt, gt1, gt2);
+      }
+      fclose(tf);
      }
   }
 
@@ -329,184 +391,179 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
   }
   printPreamble(a_Sources,event);
 
-  
-// Set up timers
+  // Set up timers
   double time_start_init = MPI_Wtime();
   double time_measure[20];
   double time_sum[10]={0,0,0,0,0,0,0,0,0,0};
   //  double bc_time_measure[5]={0,0,0,0,0};
 
-// Sort sources wrt spatial location, needed for thread parallel computing
+  // Sort sources wrt spatial location, needed for thread parallel computing
   vector<int> identsources;
   sort_grid_point_sources( point_sources, identsources );
 
-// Assign initial data
+  // Assign initial data
   int beginCycle; 
   float_sw4 t;
   if( m_check_point->do_restart() )
   {
-     double timeRestartBegin = MPI_Wtime();
-     if (!m_check_point->useHDF5())
-        m_check_point->read_checkpoint( t, beginCycle, Um, U, AlphaVEm, AlphaVE );
-#ifdef USE_HDF5
-     else
-        m_check_point->read_checkpoint_hdf5( t, beginCycle, Um, U, AlphaVEm, AlphaVE );
-#else
-     else
-         if (proc_zero())
-             cout << "Configured to restart with HDF5 but SW4 is not compiled with HDF5!" << endl;
-#endif
-// tmp
-     if (proc_zero())
-        printf("After reading checkpoint data: beginCycle=%d, t=%e\n", beginCycle, t);
-// end tmp     
+    double timeRestartBegin = MPI_Wtime();
+    if (!m_check_point->useHDF5())
+      m_check_point->read_checkpoint( t, beginCycle, Um, U, AlphaVEm, AlphaVE );
+    #ifdef USE_HDF5
+        else
+            m_check_point->read_checkpoint_hdf5( t, beginCycle, Um, U, AlphaVEm, AlphaVE );
+    #else
+        else
+            if (proc_zero())
+                cout << "Configured to restart with HDF5 but SW4 is not compiled with HDF5!" << endl;
+    #endif
+    // tmp
+    if (proc_zero())
+      printf("After reading checkpoint data: beginCycle=%d, t=%e\n", beginCycle, t);
+    // end tmp     
 
-     // Make sure the TimeSeries output has the correct time shift,
-     // and know's it's a restart
-     double timeSeriesRestartBegin = MPI_Wtime();
-     for (int ts=0; ts<a_TimeSeries.size(); ts++)
-     {
-       a_TimeSeries[ts]->doRestart(this, false, t, beginCycle);
-     }
-     double timeSeriesRestart = MPI_Wtime() - timeSeriesRestartBegin;
-     if( proc_zero() && m_output_detailed_timing )
-     {
-        cout << "Wallclock time to read checkpoint file: " << timeSeriesRestartBegin-timeRestartBegin << " seconds " << endl;
-        cout << "Wallclock time to read " << a_TimeSeries.size() << " sets of station files: " << timeSeriesRestart << " seconds " << endl;
-     }
+    // Make sure the TimeSeries output has the correct time shift,
+    // and know's it's a restart
+    double timeSeriesRestartBegin = MPI_Wtime();
+    for (int ts=0; ts<a_TimeSeries.size(); ts++)
+    {
+      a_TimeSeries[ts]->doRestart(this, false, t, beginCycle);
+    }
+    double timeSeriesRestart = MPI_Wtime() - timeSeriesRestartBegin;
+    if( proc_zero() && m_output_detailed_timing )
+    {
+      cout << "Wallclock time to read checkpoint file: " << timeSeriesRestartBegin-timeRestartBegin << " seconds " << endl;
+      cout << "Wallclock time to read " << a_TimeSeries.size() << " sets of station files: " << timeSeriesRestart << " seconds " << endl;
+    }
 
-// Reset image time to the time corresponding to restart
-#pragma omp parallel for
-  for (unsigned int fIndex = 0; fIndex < mImageFiles.size(); ++fIndex)
-     mImageFiles[fIndex]->initializeTime(t);
-   
+    // Reset image time to the time corresponding to restart
+    #pragma omp parallel for
+      for (unsigned int fIndex = 0; fIndex < mImageFiles.size(); ++fIndex)
+        mImageFiles[fIndex]->initializeTime(t);
 
-
-     // Restart data is defined at ghost point outside physical boundaries, still
-     // need to communicate solution arrays to define it a parallel overlap points
-     beginCycle++; // needs to be one step ahead of 't', see comment 5 lines below
+    // Restart data is defined at ghost point outside physical boundaries, still
+    // need to communicate solution arrays to define it a parallel overlap points
+    beginCycle++; // needs to be one step ahead of 't', see comment 5 lines below
   }
   else
   {
-// NOTE: time stepping loop starts at currentTimeStep = beginCycle; ends at currentTimeStep <= mNumberOfTimeSteps
-// However, the time variable 't' is incremented at the end of the time stepping loop. Thus the time step index is one step
-// ahead of 't' at the start.
-     beginCycle = 1; 
-     t = mTstart;
-     initialData(mTstart, U, AlphaVE);
-     initialData(mTstart-mDt, Um, AlphaVEm );
+    // NOTE: time stepping loop starts at currentTimeStep = beginCycle; ends at currentTimeStep <= mNumberOfTimeSteps
+    // However, the time variable 't' is incremented at the end of the time stepping loop. Thus the time step index is one step
+    // ahead of 't' at the start.
+    beginCycle = 1; 
+    t = mTstart;
+    initialData(mTstart, U, AlphaVE);
+    initialData(mTstart-mDt, Um, AlphaVEm );
   }
-  
+
   if ( !mQuiet && mVerbose && proc_zero() )
     cout << "  Initial data has been assigned" << endl;
 
-// do some testing...
+  // do some testing...
   initial_tw_test( U, Up, F, a_Mu, a_Lambda, Lu, Uacc, AlphaVE, point_sources, identsources, t );
 
-// after checkpoint restart, we must communicate the memory variables
+  // after checkpoint restart, we must communicate the memory variables
   if(  m_check_point->do_restart() && m_use_attenuation && (m_number_mechanisms > 0) )
   {
-// AlphaVE
-// communicate across processor boundaries
-     for(int g=0 ; g < mNumberOfGrids ; g++ )
-     {
-        for(int m=0 ; m < m_number_mechanisms; m++ )
-           communicate_array( AlphaVE[g][m], g );
-     }
-// AlphaVEm
-// communicate across processor boundaries
-     for(int g=0 ; g < mNumberOfGrids ; g++ )
-     {
-        for(int m=0 ; m < m_number_mechanisms; m++ )
-           communicate_array( AlphaVEm[g][m], g );
-     }
+    // AlphaVE
+    // communicate across processor boundaries
+    for(int g=0 ; g < mNumberOfGrids ; g++ )
+    {
+      for(int m=0 ; m < m_number_mechanisms; m++ )
+        communicate_array( AlphaVE[g][m], g );
+    }
+    // AlphaVEm
+    // communicate across processor boundaries
+    for(int g=0 ; g < mNumberOfGrids ; g++ )
+    {
+      for(int m=0 ; m < m_number_mechanisms; m++ )
+          communicate_array( AlphaVEm[g][m], g );
+    }
   } // end if checkpoint restarting
-  
 
-// enforce bc on initial data
-// U
-// communicate across processor boundaries
+  // enforce bc on initial data
+  // U
+  // communicate across processor boundaries
   for(int g=0 ; g < mNumberOfGrids ; g++ )
     communicate_array( U[g], g );
-// boundary forcing
+  // boundary forcing
   cartesian_bc_forcing( t, BCForcing, a_Sources );
 
-// enforce boundary condition
+  // enforce boundary condition
   if( m_anisotropic )
-     enforceBCanisotropic( U, mC, t, BCForcing );
+    enforceBCanisotropic( U, mC, t, BCForcing );
   else
-     enforceBC( U, a_Rho, a_Mu, a_Lambda, AlphaVE, t, BCForcing );   
+    enforceBC( U, a_Rho, a_Mu, a_Lambda, AlphaVE, t, BCForcing );   
 
   for( int g=mNumberOfCartesianGrids; g < mNumberOfGrids-1 ; g++ )
-     m_cli2[g-mNumberOfCartesianGrids]->impose_ic( U, t, F, AlphaVE );
+    m_cli2[g-mNumberOfCartesianGrids]->impose_ic( U, t, F, AlphaVE );
 
-// Impose un-coupled free surface boundary condition with visco-elastic terms for 'Up'
-//  if( m_use_attenuation && (m_number_mechanisms > 0) )
-//  {
-//     enforceBCfreeAtt2( U, a_Mu, a_Lambda, AlphaVE, BCForcing );
-//  }
-// Um
-// communicate across processor boundaries
+  // Impose un-coupled free surface boundary condition with visco-elastic terms for 'Up'
+  //  if( m_use_attenuation && (m_number_mechanisms > 0) )
+  //  {
+  //     enforceBCfreeAtt2( U, a_Mu, a_Lambda, AlphaVE, BCForcing );
+  //  }
+  // Um
+  // communicate across processor boundaries
   for(int g=0 ; g < mNumberOfGrids ; g++ )
     communicate_array( Um[g], g );
 
   //    Um[0].save_to_disk("um-dbg0.bin");
   //    Um[1].save_to_disk("um-dbg1.bin");
 
-// boundary forcing
+  // boundary forcing
   cartesian_bc_forcing( t-mDt, BCForcing, a_Sources );
 
-// enforce boundary condition
+  // enforce boundary condition
   if( m_anisotropic )
-     enforceBCanisotropic( Um, mC, t-mDt, BCForcing );
+    enforceBCanisotropic( Um, mC, t-mDt, BCForcing );
   else
-     enforceBC( Um, a_Rho, a_Mu, a_Lambda, AlphaVEm, t-mDt, BCForcing );
+    enforceBC( Um, a_Rho, a_Mu, a_Lambda, AlphaVEm, t-mDt, BCForcing );
 
   for( int g=mNumberOfCartesianGrids; g < mNumberOfGrids-1 ; g++ )
-     m_cli2[g-mNumberOfCartesianGrids]->impose_ic( Um, t-mDt, F, AlphaVEm );
+    m_cli2[g-mNumberOfCartesianGrids]->impose_ic( Um, t-mDt, F, AlphaVEm );
 
-// Impose un-coupled free surface boundary condition with visco-elastic terms for 'Up'
-//  if( m_use_attenuation && (m_number_mechanisms > 0) )
-//  {
-//     enforceBCfreeAtt2( Um, a_Mu, a_Lambda, AlphaVEm, BCForcing );
-//  }
+  // Impose un-coupled free surface boundary condition with visco-elastic terms for 'Up'
+  //  if( m_use_attenuation && (m_number_mechanisms > 0) )
+  //  {
+  //     enforceBCfreeAtt2( Um, a_Mu, a_Lambda, AlphaVEm, BCForcing );
+  //  }
 
-// more testing
+  // more testing
   checkpoint_twilight_test( Um, U, Up, AlphaVEm, AlphaVE, AlphaVEp, a_Sources, t );
 
-// test if the spatial operator is self-adjoint (only works without mesh refinement)
+  // test if the spatial operator is self-adjoint (only works without mesh refinement)
   if (m_energy_test && getVerbosity() >= 1 && getNumberOfGrids() == 1)
   {
-     if ( proc_zero() )
-        printf("Using the intial data to check if the spatial operator is self-adjoint\n");
+    if ( proc_zero() )
+      printf("Using the intial data to check if the spatial operator is self-adjoint\n");
 
      
-// compute Uacc = L(U) and Vacc=L(V); V=Um
+    // compute Uacc = L(U) and Vacc=L(V); V=Um
      evalRHS( U, a_Mu, a_Lambda, Lu, AlphaVE ); // save Lu in composite grid 'Lu'
      evalRHS( Um, a_Mu, a_Lambda, Uacc, AlphaVE ); // save Lu in composite grid 'Lu'
-// should not be necessary to communicate across processor boundaries to make ghost points agree
+    // should not be necessary to communicate across processor boundaries to make ghost points agree
   
-// evaluate (V, Uacc) and (U, Vacc) and compare!
+    // evaluate (V, Uacc) and (U, Vacc) and compare!
 
-// NOTE: scalalarProd() is not implemented for curvilinear grids
-     float_sw4 sp_vLu = scalarProduct( Um,Lu );
-     float_sw4 sp_uLv = scalarProduct( U,Uacc );
+    // NOTE: scalalarProd() is not implemented for curvilinear grids
+    float_sw4 sp_vLu = scalarProduct( Um,Lu );
+    float_sw4 sp_uLv = scalarProduct( U,Uacc );
     
-     if ( proc_zero() )
-        printf("Scalar products (Um, L(U)) = %e and (U, L(Um)) = %e, diff=%e\n", sp_vLu, sp_uLv, sp_vLu-sp_uLv);
+    if ( proc_zero() )
+      printf("Scalar products (Um, L(U)) = %e and (U, L(Um)) = %e, diff=%e\n", sp_vLu, sp_uLv, sp_vLu-sp_uLv);
   } // end m_energy_test ...
 
   if( m_moment_test )
      test_sources( point_sources, a_Sources, F, identsources );
 
-
-// save initial data on receiver records
+  // save initial data on receiver records
   vector<float_sw4> uRec;
 
-#if USE_HDF5
+  #if USE_HDF5
   // Tang: if write HDF5 data and not restart, have rank 0 create the HDF5 file with all necessary groups, attributes, and datasets
   // Disable HDF5 file locking so we can have multiple writer to open and write different datasets of the same file
-  setenv("HDF5_USE_FILE_LOCKING", "FALSE", 1);
+    setenv("HDF5_USE_FILE_LOCKING", "FALSE", 1);
   if ( a_TimeSeries.size() > 0 && a_TimeSeries[0]->getUseHDF5()) {
     for (int tsi = 0; tsi < a_TimeSeries.size(); tsi++) 
       a_TimeSeries[tsi]->resetHDF5file();
@@ -514,14 +571,14 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
       createTimeSeriesHDF5File(a_TimeSeries, mNumberOfTimeSteps[event]+1, mDt, "");
     MPI_Barrier(m_1d_communicator);
   }
-#endif
+  #endif
 
-   if ( (m_use_EQL && m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only record on converged iteration
+  if ( (m_use_EQL && m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only record on converged iteration
   {
   for (int ts=0; ts<a_TimeSeries.size(); ts++)
   {
-// can't compute a 2nd order accurate time derivative at this point
-// therefore, don't record anything related to velocities for the initial data
+    // can't compute a 2nd order accurate time derivative at this point
+    // therefore, don't record anything related to velocities for the initial data
     if (a_TimeSeries[ts]->getMode() != TimeSeries::Velocity && a_TimeSeries[ts]->myPoint())
     {
       int i0 = a_TimeSeries[ts]->m_i0;
@@ -529,14 +586,14 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
       int k0 = a_TimeSeries[ts]->m_k0;
       int grid0 = a_TimeSeries[ts]->m_grid0;
       extractRecordData(a_TimeSeries[ts]->getMode(), i0, j0, k0, grid0, 
-			uRec, Um, U); 
+      uRec, Um, U); 
       a_TimeSeries[ts]->recordData(uRec);
     }
   }
   }
 
-// save any images for cycle = 0 (initial data), or beginCycle-1 (checkpoint restart)
-if ( (m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only record on converged iteration
+  // save any images for cycle = 0 (initial data), or beginCycle-1 (checkpoint restart)
+  if ( (m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only record on converged iteration
   {
     reverse_setup_viscoelastic();
     update_images( beginCycle-1, t, U, Um, Up, a_Rho, a_Mu, a_Lambda, a_Sources, 1 );
@@ -550,10 +607,10 @@ if ( (m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only record on converg
     mESSI3DFiles[i3]->set_restart(m_check_point->do_restart());
   }
 
-// NOTE: time stepping loop starts at currentTimeStep = beginCycle; ends at currentTimeStep <= mNumberOfTimeSteps
+  // NOTE: time stepping loop starts at currentTimeStep = beginCycle; ends at currentTimeStep <= mNumberOfTimeSteps
 
   FILE *lf=NULL;
-// open file for saving norm of error
+  // open file for saving norm of error
   if ( (m_lamb_test || m_point_source_test || m_rayleigh_wave_test || m_error_log) && proc_zero() )
   {
     string path=getPath(eglobal);
@@ -573,32 +630,32 @@ if ( (m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only record on converg
     lf = fopen(fileName.str().c_str(),"w");
   }
     
-// output flags and settings that affect the run
+  // output flags and settings that affect the run
   if( !mQuiet && proc_zero() && mVerbose >= 1 )
   {
     printf("\nReporting SW4 internal flags and settings:\n");
     printf("m_testing=%s, twilight=%s, point_source=%s, moment_test=%s, energy_test=%s, " 
-	   "lamb_test=%s, rayleigh_test=%s\n",
-	   m_testing?"yes":"no",
-	   m_twilight_forcing?"yes":"no",
-	   m_point_source_test?"yes":"no",
-	   m_moment_test?"yes":"no",
-	   m_energy_test?"yes":"no",
-	   m_lamb_test?"yes":"no",
-	   m_rayleigh_wave_test?"yes":"no");
+    "lamb_test=%s, rayleigh_test=%s\n",
+    m_testing?"yes":"no",
+    m_twilight_forcing?"yes":"no",
+    m_point_source_test?"yes":"no",
+    m_moment_test?"yes":"no",
+    m_energy_test?"yes":"no",
+    m_lamb_test?"yes":"no",
+    m_rayleigh_wave_test?"yes":"no");
     printf("m_use_supergrid=%s\n", usingSupergrid()?"yes":"no");
     printf("End report of internal flags and settings\n\n");
   }
    
   if( save_sides )
   {
-     for( int g=0 ; g < mNumberOfGrids ; g++ )
-     {
-	Upred_saved_sides[g]->push( Um[g], -1 );
-	Upred_saved_sides[g]->push( U[g], 0 );
-	Ucorr_saved_sides[g]->push( Um[g], -1 );
-	Ucorr_saved_sides[g]->push( U[g], 0 );
-     }
+    for( int g=0 ; g < mNumberOfGrids ; g++ )
+    {
+      Upred_saved_sides[g]->push( Um[g], -1 );
+      Upred_saved_sides[g]->push( U[g], 0 );
+      Ucorr_saved_sides[g]->push( Um[g], -1 );
+      Ucorr_saved_sides[g]->push( U[g], 0 );
+    }
   }
 
   for( int g=0 ; g < mNumberOfGrids ; g++ )
@@ -607,20 +664,51 @@ if ( (m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only record on converg
   if( m_do_geodynbc )
      advance_geodyn_time( t+mDt );
 
-// test: compute forcing for the first time step before the loop to get started
+  // test: compute forcing for the first time step before the loop to get started
   Force( t, F, point_sources, identsources );
-// end test
+  // end test
 
   double time_start_solve = MPI_Wtime();
   print_execution_time( time_start_init, time_start_solve, "initial data phase" );
 
-// BEGIN TIME STEPPING LOOP
+  // BEGIN TIME STEPPING LOOP
   if ( !mQuiet && proc_zero() )
     cout << endl << "  Begin time stepping..." << endl;
 
   //   int idbg=113, jdbg=201, kdbg=25, gdbg=1;
   //   int idbg=57, jdbg=101, kdbg=1, gdbg=0;
   //   bool dbgowner=interior_point_in_proc(idbg,jdbg,gdbg);
+
+  // INITIAL DRM COMPUTATION BEFORE LOOP //
+  if (m_use_DRM) {
+    // Reset Up_drm then fill with values from DRM sources
+    for (int g=0 ; g < mNumberOfGrids ; g++ ){
+      Up_drm[g].set_to_zero();
+    }
+    DRMSourcesToUField( Up_drm, t+mDt, true ); // inner = true
+
+    if (m_use_attenuation && m_number_mechanisms > 0)
+    {
+      updateMemVarCorr( AlphaVEp_drm, AlphaVEm_drm, Up_drm, U_drm, Um_drm, t );
+    }
+
+    // Update ghost points in Up_drm
+    enforceBC( Up_drm, a_Rho, a_Mu, a_Lambda, AlphaVEp_drm, t+mDt, BCForcing );
+
+    // First compute inner boundary forces
+    evalRHS( U_drm, a_Mu, a_Lambda, Lu_drm, AlphaVE_drm ); // compute Lu_drm
+    evalForce( Up_drm, U_drm, Um_drm, a_Rho, Lu_drm, F_drm, true ); // inner = true
+
+    // Sum all forces into time stepping force array
+    maskForce( F );
+    for (int ii = m_iStart[0]; ii <= m_iEnd[0]; ii++)
+    for (int jj = m_jStart[0]; jj <= m_jEnd[0]; jj++)
+    for (int kk = m_kStart[0]; kk <= m_kEnd[0]; kk++)
+    for (int cc = 1; cc <= 3; cc++) {
+      if ( point_on_DRM_boundary(ii,jj,kk,0,true) || point_on_DRM_boundary(ii,jj,kk,0,false))
+        F[0](cc,ii,jj,kk) = F[0](cc,ii,jj,kk) + F_drm[0](cc,ii,jj,kk);
+    }
+  } // end if m_use_DRM
 
   for( int currentTimeStep = beginCycle; currentTimeStep <= mNumberOfTimeSteps[event]; currentTimeStep++)
   {    
@@ -632,7 +720,7 @@ if ( (m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only record on converg
     if( is_debug && proc_zero() )
       cout << "Solving " << currentTimeStep << endl;
 
-// all types of forcing...
+    // all types of forcing...
     bool trace =false;
     int dbgproc = 1;
 
@@ -653,11 +741,11 @@ if ( (m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only record on converg
        //       check_for_nan( AlphaVE, m_number_mechanisms, 1, "alpha");
     }
 
-// evaluate right hand side
+    // evaluate right hand side
     if( m_anisotropic )
-       evalRHSanisotropic( U, mC, Lu );
+      evalRHSanisotropic( U, mC, Lu );
     else
-       evalRHS( U, a_Mu, a_Lambda, Lu, AlphaVE ); // save Lu in composite grid 'Lu'
+      evalRHS( U, a_Mu, a_Lambda, Lu, AlphaVE ); // save Lu in composite grid 'Lu'
 
     if( m_output_detailed_timing )
        time_measure[1] = MPI_Wtime();
@@ -669,7 +757,34 @@ if ( (m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only record on converg
        check_for_nan( Lu, 1, "Lu pred. " );
 
     // take predictor step, store in Up
-    evalPredictor( Up, U, Um, a_Rho, Lu, F );    
+    evalPredictor( Up, U, Um, a_Rho, Lu, F );
+
+    // // DEBUG
+    // int i_dbg = 47;
+    // int j_dbg = 52;
+    // int k_dbg = 21;
+    // if ( interior_point_in_proc(i_dbg, j_dbg, 0) ){
+    //   cout << endl;
+    //   cout << "Computing Up:" << endl;
+    //   cout << "F:  "; debugPrinter_drm( F[0] );
+    //   cout << "Lu: "; debugPrinter_drm( Lu[0] ); 
+    //   cout << "U:        "; debugPrinter_drm( U[0] );
+    //   cout << "Um:       "; debugPrinter_drm( Um[0] );
+    //   cout << "Up:       "; debugPrinter_drm( Up[0] );
+    //   if (m_use_DRM){
+    //     cout << "Up_drm:  "; debugPrinter_drm( Up_drm[0] );
+    //   }
+    //   cout << endl;
+    // }
+    // // debug
+
+    // // DEBUG
+    // if ( m_use_DRM && interior_point_in_proc(i_dbg, j_dbg, 0) && m_use_attenuation ){
+    //   cout << "AlphaVE:      "; debugPrinter_drm( AlphaVE[0][0] );
+    //   cout << "AlphaVE_drm: "; debugPrinter_drm( AlphaVE_drm[0][0] );
+    //   cout << endl;
+    // }
+    // // debug
 
     if( m_output_detailed_timing )
        time_measure[2] = MPI_Wtime();
@@ -677,7 +792,7 @@ if ( (m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only record on converg
     if( trace &&  m_myRank == dbgproc )
        cout <<" after evalPredictor" << endl;
 
-// communicate across processor boundaries
+    // communicate across processor boundaries
     for(int g=0 ; g < mNumberOfGrids ; g++ )
        communicate_array( Up[g], g );
 
@@ -687,262 +802,391 @@ if ( (m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only record on converg
     if( trace && m_myRank == dbgproc )
        cout <<" after communicate_array " << endl;
 
-// calculate boundary forcing at time t+mDt
+    // calculate boundary forcing at time t+mDt
     cartesian_bc_forcing( t+mDt, BCForcing, a_Sources );
 
     if( m_output_detailed_timing )
        time_measure[4] = MPI_Wtime();
 
-// NEW (Apr. 3, 2017) PC-time stepping for the memory variable
+    // NEW (Apr. 3, 2017) PC-time stepping for the memory variable
     if( m_use_attenuation && m_number_mechanisms > 0 )
        updateMemVarPred( AlphaVEp, AlphaVEm, U, t );
+    // // DEBUG
+    // if ( m_use_DRM && interior_point_in_proc(i_dbg, j_dbg, 0) && m_use_attenuation ){
+    //   cout << "AlphaVEp_predictor: "; debugPrinter_drm( AlphaVEp[0][0] );
+    //   cout << endl;
+    // }
+    // // debug
 
     if( m_output_detailed_timing )
        time_measure[5] = MPI_Wtime();
 
-// Enforce data on coupling boundary to external solver
+    // Enforce data on coupling boundary to external solver
     if( m_do_geodynbc )
     {
-       if( mOrder == 2 )
-       {
-	  impose_geodyn_ibcdata( Up, U, t+mDt, BCForcing );
-          advance_geodyn_time( t+2*mDt );
-	  if( m_twilight_forcing )
-	     Force( t+mDt, F, point_sources, identsources );	     
-	  geodyn_second_ghost_point( a_Rho, a_Mu, a_Lambda, F, t+2*mDt, Up, U, 1 );
-	  for(int g=0 ; g < mNumberOfGrids ; g++ )
-	     communicate_array( Up[g], g );
-       }
-       else
-       {
-	  impose_geodyn_ibcdata( Up, U, t+mDt, BCForcing );
-	  if( m_twilight_forcing )
-	     Force_tt( t, F, point_sources, identsources );	     
-	  evalDpDmInTime( Up, U, Um, Uacc ); // store result in Uacc
-	  geodyn_second_ghost_point( a_Rho, a_Mu, a_Lambda, F, t+mDt, Uacc, U, 0 );
-	  geodyn_up_from_uacc( Up, Uacc, U, Um, mDt ); //copy second ghost point to Up
-	  for(int g=0 ; g < mNumberOfGrids ; g++ )
-	     communicate_array( Up[g], g );
-       }
+      if( mOrder == 2 )
+      {
+        impose_geodyn_ibcdata( Up, U, t+mDt, BCForcing );
+        advance_geodyn_time( t+2*mDt );
+        if( m_twilight_forcing )
+            Force( t+mDt, F, point_sources, identsources );	     
+        geodyn_second_ghost_point( a_Rho, a_Mu, a_Lambda, F, t+2*mDt, Up, U, 1 );
+        for(int g=0 ; g < mNumberOfGrids ; g++ )
+            communicate_array( Up[g], g );
+      }
+      else
+      {
+        impose_geodyn_ibcdata( Up, U, t+mDt, BCForcing );
+        if( m_twilight_forcing )
+          Force_tt( t, F, point_sources, identsources );	     
+        evalDpDmInTime( Up, U, Um, Uacc ); // store result in Uacc
+        geodyn_second_ghost_point( a_Rho, a_Mu, a_Lambda, F, t+mDt, Uacc, U, 0 );
+        geodyn_up_from_uacc( Up, Uacc, U, Um, mDt ); //copy second ghost point to Up
+        for(int g=0 ; g < mNumberOfGrids ; g++ )
+          communicate_array( Up[g], g );
+      }
     }
 
-// update ghost points in Up
+    // update ghost points in Up
     if( m_anisotropic )
-       enforceBCanisotropic( Up, mC, t+mDt, BCForcing );
+      enforceBCanisotropic( Up, mC, t+mDt, BCForcing );
     else
-       enforceBC( Up, a_Rho, a_Mu, a_Lambda, AlphaVEp, t+mDt, BCForcing );
+      enforceBC( Up, a_Rho, a_Mu, a_Lambda, AlphaVEp, t+mDt, BCForcing );
 
+    // NEW
+    // Impose un-coupled free surface boundary condition with visco-elastic terms
+    //    if( m_use_attenuation && m_number_mechanisms > 0 )
+    //       enforceBCfreeAtt2( Up, a_Mu, a_Lambda, AlphaVEp, BCForcing );
 
-// NEW
-// Impose un-coupled free surface boundary condition with visco-elastic terms
-//    if( m_use_attenuation && m_number_mechanisms > 0 )
-//       enforceBCfreeAtt2( Up, a_Mu, a_Lambda, AlphaVEp, BCForcing );
-    
     if( m_output_detailed_timing )
-       time_measure[6] = MPI_Wtime();
+      time_measure[6] = MPI_Wtime();
 
     if( trace && m_myRank == dbgproc )
-       cout <<" after enforceBC" << endl;
+      cout <<" after enforceBC" << endl;
 
     if( m_checkfornan )
-       check_for_nan( Up, 1, "U pred. " );
+      check_for_nan( Up, 1, "U pred. " );
     //    Up[0].save_to_disk("up-dbg4.bin");
 
-// Grid refinement interface conditions:
-// *** 2nd order in TIME
+    // Grid refinement interface conditions:
+    // *** 2nd order in TIME
     if (mOrder == 2)
     {
-// add super-grid damping terms before enforcing interface conditions
-// (otherwise, Up doesn't have the correct values on the interface)
-       if (usingSupergrid())
-       {
-	  addSuperGridDamping( Up, U, Um, a_Rho );
-       }
-// Also add Arben's simplified attenuation
-       if (m_use_attenuation && m_number_mechanisms == 0)
-       {
-	 simpleAttenuation( Up );
-       }
-       if( m_output_detailed_timing )
-          time_measure[7] = MPI_Wtime();
+      // add super-grid damping terms before enforcing interface conditions
+      // (otherwise, Up doesn't have the correct values on the interface)
+      if (usingSupergrid())
+      {
+        addSuperGridDamping( Up, U, Um, a_Rho );
+      }
+      // Also add Arben's simplified attenuation
+      if (m_use_attenuation && m_number_mechanisms == 0)
+        simpleAttenuation( Up );
+      if( m_output_detailed_timing )
+        time_measure[7] = MPI_Wtime();
 
-// test: compute forcing for next time step here so it can be used in enforceIC()
-       Force( t+mDt, F, point_sources, identsources );
+      // test: compute forcing for next time step here so it can be used in enforceIC()
+      Force( t+mDt, F, point_sources, identsources );
 
-       if( m_output_detailed_timing )
-          time_measure[8] = MPI_Wtime();
-// end test
+      if( m_output_detailed_timing )
+        time_measure[8] = MPI_Wtime();
+      // end test
 
-// interface conditions for 2nd order in time
-// NOTE: this routine calls preliminary_predictor for t+dt, which needs F(t+dt). It is computed at the top of next time step
-       enforceIC2( Up, U, Um, AlphaVEp, t, F, point_sources, a_Rho, a_Mu, a_Lambda );
+      // interface conditions for 2nd order in time
+      // NOTE: this routine calls preliminary_predictor for t+dt, which needs F(t+dt). It is computed at the top of next time step
+      enforceIC2( Up, U, Um, AlphaVEp, t, F, point_sources, a_Rho, a_Mu, a_Lambda );
 
-       if( m_output_detailed_timing )
-          time_measure[17] = MPI_Wtime();
+      if( m_output_detailed_timing )
+        time_measure[17] = MPI_Wtime();
     }
     else // 4th order time stepping
     {
-       if( m_output_detailed_timing )
-          time_measure[7] = MPI_Wtime();
+      if( m_output_detailed_timing )
+        time_measure[7] = MPI_Wtime();
 
-// test: precompute F_tt(t)
-       Force_tt( t, F, point_sources, identsources );
+      // test: precompute F_tt(t)
+      Force_tt( t, F, point_sources, identsources );
+      // end test 
 
-       if( m_output_detailed_timing )
-          time_measure[8] = MPI_Wtime();
-// end test 
+      // DRM computation of F_tt
+      if (m_use_DRM) {
+        // Reset the temporary arrays
+        for (int g=0 ; g < mNumberOfGrids ; g++ ){
+          F_drm[g].set_to_zero();
+          Lu_drm[g].set_to_zero();
+        }
 
-// *** 4th order in TIME interface conditions for the predictor
-// June 14, 2017: adding AlphaVE & AlphaVEm
-// NOTE: true means call preliminary_corrector, which needs F_tt(t) & is computed 5 lines down
-       enforceIC( Up, U, Um, AlphaVEp, AlphaVE, AlphaVEm, t, true, F, point_sources,
-                  a_Rho, a_Mu, a_Lambda );
+        // Compute AlphaVEtt for drm
+        if (m_use_attenuation && m_number_mechanisms > 0)
+          evalDpDmInTimeAtt( AlphaVEp_drm, AlphaVE_drm, AlphaVEm_drm ); // store AlphaVEacc in AlphaVEm
 
-       if( m_output_detailed_timing )
-          time_measure[9] = MPI_Wtime();
+        // Compute the aggregated Utt
+        evalDpDmInTime( Up_drm, U_drm, Um_drm, Utt_drm );
+
+        // // DEBUG
+        // if ( m_use_DRM && interior_point_in_proc(i_dbg, j_dbg, 0) && m_use_attenuation ){
+        //   cout << "AlphaVEacc_drm: "; debugPrinter_drm( AlphaVEm_drm[0][0] );
+        // }
+        // // debug
+
+        // Ftt(t_n) = -Lh(U_tt(t_n)) for DRM forces
+        evalRHS( Utt_drm, a_Mu, a_Lambda, Lu_drm, AlphaVEm_drm );
+
+        // Add to other Ftt
+        maskForce( F );
+        for (int ii = m_iStart[0]; ii <= m_iEnd[0]; ii++)
+        for (int jj = m_jStart[0]; jj <= m_jEnd[0]; jj++)
+        for (int kk = m_kStart[0]; kk <= m_kEnd[0]; kk++)
+        for (int cc = 1; cc <= 3; cc++) {
+          if ( point_on_DRM_boundary(ii,jj,kk,0,true) || point_on_DRM_boundary(ii,jj,kk,0,false) )
+            F[0](cc,ii,jj,kk) = F[0](cc,ii,jj,kk) - Lu_drm[0](cc,ii,jj,kk);
+        }
+        cycleSolutionArrays( Um_drm, U_drm, Up_drm, AlphaVEm_drm, AlphaVE_drm, AlphaVEp_drm);
+      } // end if using drm
+
+      if( m_output_detailed_timing )
+        time_measure[8] = MPI_Wtime();
+
+      // *** 4th order in TIME interface conditions for the predictor
+      // June 14, 2017: adding AlphaVE & AlphaVEm
+      // NOTE: true means call preliminary_corrector, which needs F_tt(t) & is computed 5 lines down
+      // FX: point_sources is carried through but not actually used
+      enforceIC( Up, U, Um, AlphaVEp, AlphaVE, AlphaVEm, t, true, F, point_sources,
+                a_Rho, a_Mu, a_Lambda );
+
+      if( m_output_detailed_timing )
+        time_measure[9] = MPI_Wtime();
     }
 
-//
-// corrector step for
-// *** 4th order in time ***
-//
+    //
+    // corrector step for
+    // *** 4th order in time ***
+    //
     if (mOrder == 4)
     {
-       // Force_tt( t, F, point_sources, identsources );
+      // Force_tt( t, F, point_sources, identsources );
 
+      evalDpDmInTime( Up, U, Um, Uacc ); // store result in Uacc
 
-       evalDpDmInTime( Up, U, Um, Uacc ); // store result in Uacc
+      if( trace && m_myRank == dbgproc )
+        cout <<" after evalDpDmInTime" << endl;
+      if( save_sides )
+      for( int g=0 ; g < mNumberOfGrids ; g++ )
+        Upred_saved_sides[g]->push( Uacc[g], currentTimeStep );
 
-       if( trace && m_myRank == dbgproc )
-          cout <<" after evalDpDmInTime" << endl;
-       if( save_sides )
-	  for( int g=0 ; g < mNumberOfGrids ; g++ )
-	     Upred_saved_sides[g]->push( Uacc[g], currentTimeStep );
+      if( m_checkfornan )
+        check_for_nan( Uacc, 1, "uacc " );
 
-       if( m_checkfornan )
-	  check_for_nan( Uacc, 1, "uacc " );
+      // July 22,  4th order update for memory variables
+      if( m_use_attenuation && m_number_mechanisms > 0 )
+        updateMemVarCorr( AlphaVEp, AlphaVEm, Up, U, Um, t );
 
-// July 22,  4th order update for memory variables
-       if( m_use_attenuation && m_number_mechanisms > 0 )
-         updateMemVarCorr( AlphaVEp, AlphaVEm, Up, U, Um, t );
+      // // DEBUG
+      // if ( interior_point_in_proc(i_dbg, j_dbg, 0) && m_use_attenuation ){
+      //   cout << endl;
+      //   cout << "Computing the next memory variable:" << endl;
+      //   cout << "AlphaVEm:        "; debugPrinter_drm( AlphaVEm[0][0] );
+      //   cout << "Um:              "; debugPrinter_drm( Um[0] );
+      //   cout << "U:               "; debugPrinter_drm( U[0] );
+      //   cout << "Up:              "; debugPrinter_drm( Up[0] );
+      //   cout << "AlphaVEp_correc: "; debugPrinter_drm( AlphaVEp[0][0] );
+      //   cout << endl;
+      // }
+      // // debug
 
-       if( m_use_attenuation && m_number_mechanisms > 0 )
-          evalDpDmInTimeAtt( AlphaVEp, AlphaVE, AlphaVEm ); // store AlphaVEacc in AlphaVEm
-       if( trace && m_myRank == dbgproc )
-	  cout <<" after evalDpDmInTimeAtt" << endl;
+      if( m_use_attenuation && m_number_mechanisms > 0 )
+        evalDpDmInTimeAtt( AlphaVEp, AlphaVE, AlphaVEm ); // store AlphaVEacc in AlphaVEm
+      if( trace && m_myRank == dbgproc )
+        cout <<" after evalDpDmInTimeAtt" << endl;
 
-       if( m_output_detailed_timing )
-          time_measure[10] = MPI_Wtime();
+      // // DEBUG
+      // if ( m_use_DRM && interior_point_in_proc(i_dbg, j_dbg, 0) && m_use_attenuation ){
+      //   cout << "AlphaVEacc: "; debugPrinter_drm( AlphaVEm[0][0] );
+      // }
+      // // debug
 
-       if( m_anisotropic )
-	  evalRHSanisotropic( Uacc, mC, Lu );
-       else
-	  evalRHS( Uacc, a_Mu, a_Lambda, Lu, AlphaVEm );
+      if( m_output_detailed_timing )
+        time_measure[10] = MPI_Wtime();
 
-       if( m_output_detailed_timing )
-          time_measure[11] = MPI_Wtime();
+      if( m_anisotropic )
+        evalRHSanisotropic( Uacc, mC, Lu );
+      else
+        evalRHS( Uacc, a_Mu, a_Lambda, Lu, AlphaVEm );
 
-       if( trace && m_myRank == dbgproc )
-	  cout <<" after evalRHS" << endl;
+      if( m_output_detailed_timing )
+        time_measure[11] = MPI_Wtime();
+
+      if( trace && m_myRank == dbgproc )
+        cout <<" after evalRHS" << endl;
        
-       if( m_checkfornan )
-	  check_for_nan( Lu, 1, "L(uacc) " );
+      if( m_checkfornan )
+        check_for_nan( Lu, 1, "L(uacc) " );
 
+      evalCorrector( Up, a_Rho, Lu, F );
 
-       evalCorrector( Up, a_Rho, Lu, F );
+      // // DEBUG
+      // if ( interior_point_in_proc(i_dbg, j_dbg, 0) ){
+      //   cout << endl;
+      //   cout << "Computing the next Up_correc:" << endl;
+      //   cout << "Uacc:      "; debugPrinter_drm( Uacc[0] );
+      //   if (m_use_DRM){
+      //     cout << "Utt_drm:  "; debugPrinter_drm( Utt_drm[0] );
+      //   }
+      //   cout << "Lu:        "; debugPrinter_drm( Lu[0] );
+      //   cout << "F:         "; debugPrinter_drm( F[0] );
+      //   cout << "Up:        "; debugPrinter_drm( Up[0] );
+      //   cout << endl;
+      // }
+      // // debug
 
-       if( m_output_detailed_timing )
-          time_measure[12] = MPI_Wtime();
+      if( m_output_detailed_timing )
+        time_measure[12] = MPI_Wtime();
 
-// add in super-grid damping terms
-       if (usingSupergrid())
-       {
-	  addSuperGridDamping( Up, U, Um, a_Rho );
-       }
+      // add in super-grid damping terms
+      if (usingSupergrid())
+        addSuperGridDamping( Up, U, Um, a_Rho );
 
-// Arben's simplified attenuation
-       if (m_use_attenuation && m_number_mechanisms == 0)
-       {
-	 simpleAttenuation( Up );
-       }
+      // Arben's simplified attenuation
+      if (m_use_attenuation && m_number_mechanisms == 0)
+        simpleAttenuation( Up );
 
-       if( m_output_detailed_timing )
-          time_measure[13] = MPI_Wtime();
+      if( m_output_detailed_timing )
+        time_measure[13] = MPI_Wtime();
 
-// communicate across processor boundaries
-       for(int g=0 ; g < mNumberOfGrids ; g++ )
-	  communicate_array( Up[g], g );
+      // communicate across processor boundaries
+      for(int g=0 ; g < mNumberOfGrids ; g++ )
+        communicate_array( Up[g], g );
 
-       if( m_output_detailed_timing )
-          time_measure[14] = MPI_Wtime();
+      if( m_output_detailed_timing )
+        time_measure[14] = MPI_Wtime();
 
-       if( m_do_geodynbc )
-       {
-	  impose_geodyn_ibcdata( Up, U, t+mDt, BCForcing );
-          advance_geodyn_time( t+2*mDt );
-	  if( m_twilight_forcing )
-	     Force( t+mDt, F, point_sources, identsources );	     
-	  geodyn_second_ghost_point( a_Rho, a_Mu, a_Lambda, F, t+2*mDt, Up, U, 1 );
-	  for(int g=0 ; g < mNumberOfGrids ; g++ )
-	     communicate_array( Up[g], g );
-	  // The free surface boundary conditions below will overwrite the
-	  // ghost point above the free surface of the geodyn cube.
-	  // This is a problem with the fourth order predictor-corrector time stepping
-	  // because L(Uacc) = L( (Up-2*U+Um)/(dt*dt)) depends on the ghost point value at U, 
-	  // The corrector first sets correct ghost value on Up, but it is not enough,
-	  // also the previous times, U,Um need to have the correct ghost point value.
-	  save_geoghost( Up );
-       }
-// calculate boundary forcing at time t+mDt 
-       cartesian_bc_forcing( t+mDt, BCForcing, a_Sources );
+      if( m_do_geodynbc )
+      {
+        impose_geodyn_ibcdata( Up, U, t+mDt, BCForcing );
+        advance_geodyn_time( t+2*mDt );
+        if( m_twilight_forcing )
+          Force( t+mDt, F, point_sources, identsources );	     
+        geodyn_second_ghost_point( a_Rho, a_Mu, a_Lambda, F, t+2*mDt, Up, U, 1 );
+        for(int g=0 ; g < mNumberOfGrids ; g++ )
+          communicate_array( Up[g], g );
+        // The free surface boundary conditions below will overwrite the
+        // ghost point above the free surface of the geodyn cube.
+        // This is a problem with the fourth order predictor-corrector time stepping
+        // because L(Uacc) = L( (Up-2*U+Um)/(dt*dt)) depends on the ghost point value at U, 
+        // The corrector first sets correct ghost value on Up, but it is not enough,
+        // also the previous times, U,Um need to have the correct ghost point value.
+        save_geoghost( Up );
+      }
+      // calculate boundary forcing at time t+mDt 
+      cartesian_bc_forcing( t+mDt, BCForcing, a_Sources );
 
-// update ghost points in Up
+      // update ghost points in Up
+      if( m_anisotropic )
+        enforceBCanisotropic( Up, mC, t+mDt, BCForcing );
+      else
+        enforceBC( Up, a_Rho, a_Mu, a_Lambda, AlphaVEp, t+mDt, BCForcing );
 
-       if( m_anisotropic )
-	  enforceBCanisotropic( Up, mC, t+mDt, BCForcing );
-       else
-	  enforceBC( Up, a_Rho, a_Mu, a_Lambda, AlphaVEp, t+mDt, BCForcing );
+      // NEW (Apr. 4, 2017)
+      // Impose un-coupled free surface boundary condition with visco-elastic terms for 'Up'
+      //       if( m_use_attenuation && (m_number_mechanisms > 0) )
+      //       {
+      //          enforceBCfreeAtt2( Up, a_Mu, a_Lambda, AlphaVEp, BCForcing );
+      //       }
 
-// NEW (Apr. 4, 2017)
-// Impose un-coupled free surface boundary condition with visco-elastic terms for 'Up'
-//       if( m_use_attenuation && (m_number_mechanisms > 0) )
-//       {
-//          enforceBCfreeAtt2( Up, a_Mu, a_Lambda, AlphaVEp, BCForcing );
-//       }
-
-       if( m_output_detailed_timing )
-          time_measure[15] = MPI_Wtime();
+      if( m_output_detailed_timing )
+        time_measure[15] = MPI_Wtime();
     
-       if( trace && m_myRank == dbgproc )
-          cout <<" before Forcing" << endl;
+      if( trace && m_myRank == dbgproc )
+        cout <<" before Forcing" << endl;
 
-// test: compute forcing for next time step here so it can be used in enforceIC()
-       Force( t+mDt, F, point_sources, identsources );
+      Force( t+mDt, F, point_sources, identsources );
 
-       if( m_output_detailed_timing )
-          time_measure[16] = MPI_Wtime();
+      // DRM force update (technically Fp)
+      if (m_use_DRM) {
+        // Reset Up_drm then fill with values from DRM sources
+        for (int g=0 ; g < mNumberOfGrids ; g++ ){
+          Up_drm[g].set_to_zero();
+          F_drm[g].set_to_zero();
+          Lu_drm[g].set_to_zero();
+        }
+        DRMSourcesToUField( Up_drm, t+2*mDt, true ); // these are Upp technically
 
-       if( trace && m_myRank == dbgproc )
-          cout <<" after Forcing" << endl;
-// end test
+        if (m_use_attenuation && m_number_mechanisms > 0)
+        {
+          updateMemVarCorr( AlphaVEp_drm, AlphaVEm_drm, Up_drm, U_drm, Um_drm, t+mDt );
+          // // DEBUG
+          // if ( m_use_DRM && interior_point_in_proc(i_dbg, j_dbg, 0) && m_use_attenuation ){
+          //   cout << endl;
+          //   cout << "Computing the next drm memory variable (corrector v.):" << endl;
+          //   cout << "AlphaVEm_drm: "; debugPrinter_drm( AlphaVEm_drm[0][0] );
+          //   cout << "Um_drm:       "; debugPrinter_drm( Um_drm[0] );
+          //   cout << "U_drm:        "; debugPrinter_drm( U_drm[0] );
+          //   cout << "Up_drm:       "; debugPrinter_drm( Up_drm[0] );
+          //   cout << "AlphaVEp_drm: "; debugPrinter_drm( AlphaVEp_drm[0][0] );
+          //   cout << endl;
+          // }
+          // // debug
+        }
+          
+        // Update ghost points in Upp_drm
+        enforceBC( Up_drm, a_Rho, a_Mu, a_Lambda, AlphaVEp_drm, t+2*mDt, BCForcing );
+  
+        // This is the computation for 'Fp', not F technically
+        evalRHS( U_drm, a_Mu, a_Lambda, Lu_drm, AlphaVE_drm ); 
+        evalForce( Up_drm, U_drm, Um_drm, a_Rho, Lu_drm, F_drm, true ); 
 
-// interface conditions for the corrector
-// June 14, 2017: adding AlphaVE & AlphaVEm
-// NOTE: false means call preliminary_predictor for t+dt, which needs F(t+dt). It is computed at the top of next time step
-       enforceIC( Up, U, Um, AlphaVEp, AlphaVE, AlphaVEm, t, false, F, point_sources, 
-                  a_Rho, a_Mu, a_Lambda );
+        // // DEBUG
+        // if ( m_use_DRM && interior_point_in_proc(i_dbg, j_dbg, 0) ){
+        //   cout << endl;
+        //   cout << "Computing the next F_drm force:" << endl;
+        //   cout << "Um_drm: "; debugPrinter_drm( Um_drm[0] );
+        //   cout << "U_drm:  "; debugPrinter_drm( U_drm[0] );
+        //   cout << "Up_drm: "; debugPrinter_drm( Up_drm[0] );
+        //   cout << "Lu_drm:  "; debugPrinter_drm( Lu_drm[0] );
+        //   if ( m_use_attenuation ){
+        //     cout << "AlphaVE_drm: "; debugPrinter_drm( AlphaVE_drm[0][0] );
+        //   }
+        //   cout << "F_drm:   "; debugPrinter_drm( F_drm[0] );
+        //   cout << endl;
+        // }
+        // // debug
+  
+        // Sum all forces into time stepping force array
+        maskForce( F );
+        for (int ii = m_iStart[0]; ii <= m_iEnd[0]; ii++)
+        for (int jj = m_jStart[0]; jj <= m_jEnd[0]; jj++)
+        for (int kk = m_kStart[0]; kk <= m_kEnd[0]; kk++)
+        for (int cc = 1; cc <= 3; cc++) {
+          if ( point_on_DRM_boundary(ii,jj,kk,0,true) || point_on_DRM_boundary(ii,jj,kk,0,false) )
+            F[0](cc,ii,jj,kk) = F[0](cc,ii,jj,kk) + F_drm[0](cc,ii,jj,kk);
+        }
 
-       if( m_output_detailed_timing )
-          time_measure[17] = MPI_Wtime();
+        // We don't cycle arrays yet because Ftt calculation in next time step
+        // needs to use Up, U, and Um calculated here
+      } // end if m_use_DRM
+
+      if( m_output_detailed_timing )
+        time_measure[16] = MPI_Wtime();
+
+      if( trace && m_myRank == dbgproc )
+        cout <<" after Forcing" << endl;
+
+      // interface conditions for the corrector
+      // June 14, 2017: adding AlphaVE & AlphaVEm
+      // NOTE: false means call preliminary_predictor for t+dt, which needs F(t+dt), computed above.
+      // FX: point_sources is carried through but not actually used
+      enforceIC( Up, U, Um, AlphaVEp, AlphaVE, AlphaVEm, t, false, F, point_sources, 
+                a_Rho, a_Mu, a_Lambda );
+
+      if( m_output_detailed_timing )
+        time_measure[17] = MPI_Wtime();
        
-       if( m_do_geodynbc )
-	  restore_geoghost(Up);
-       if( save_sides )
-	  for( int g=0 ; g < mNumberOfGrids ; g++ )
-	     Ucorr_saved_sides[g]->push( Up[g], currentTimeStep );
+      if( m_do_geodynbc )
+        restore_geoghost(Up);
+      if( save_sides )
+      for( int g=0 ; g < mNumberOfGrids ; g++ )
+        Ucorr_saved_sides[g]->push( Up[g], currentTimeStep );
+    } // end if mOrder == 4
 
-    }// end if mOrder == 4
-    
     if( m_checkfornan )
        check_for_nan( Up, 1, "Up" );
 
@@ -1016,7 +1260,7 @@ if ( (m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only record on converg
     //  setup_viscoelastic();
     for( int i3 = 0 ; i3 < mImage3DFiles.size() ; i3++ )
       mImage3DFiles[i3]->update_image( currentTimeStep, t, mDt, Up, a_Rho, a_Mu, a_Lambda, a_Rho, a_Mu, a_Lambda, 
-				       mQp, mQs, mPath[eglobal], mZ ); // mRho, a_Mu, mLambda occur twice because we don't use gradRho etc.
+                   mQp, mQs, mPath[eglobal], mZ ); // mRho, a_Mu, mLambda occur twice because we don't use gradRho etc.
   }
 
     // Update the ESSI hdf5 data
@@ -1037,18 +1281,18 @@ if ( (m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only record on converg
     {
       if (a_TimeSeries[ts]->myPoint())
       {
-	int i0 = a_TimeSeries[ts]->m_i0;
-	int j0 = a_TimeSeries[ts]->m_j0;
-	int k0 = a_TimeSeries[ts]->m_k0;
-	int grid0 = a_TimeSeries[ts]->m_grid0;
+   int i0 = a_TimeSeries[ts]->m_i0;
+   int j0 = a_TimeSeries[ts]->m_j0;
+   int k0 = a_TimeSeries[ts]->m_k0;
+   int grid0 = a_TimeSeries[ts]->m_grid0;
 
 // note that the solution on the new time step is in Up
 // also note that all quantities related to velocities lag by one time step; they are not
 // saved before the time stepping loop started
-	extractRecordData(a_TimeSeries[ts]->getMode(), i0, j0, k0, grid0, 
-			  uRec, Um, Up);
+   extractRecordData(a_TimeSeries[ts]->getMode(), i0, j0, k0, grid0, 
+           uRec, Um, Up);
 
-	a_TimeSeries[ts]->recordData(uRec);
+   a_TimeSeries[ts]->recordData(uRec);
       }
     }
   }
@@ -1071,9 +1315,9 @@ if ( (m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only record on converg
        double time_chkpt_tmp =MPI_Wtime()-time_chkpt;
        if( m_output_detailed_timing )
        {
-	  MPI_Allreduce( &time_chkpt_tmp, &time_chkpt, 1, MPI_DOUBLE, MPI_MAX, m_1d_communicator );
-	  if( m_myRank == 0 )
-	     cout << "Wallclock time to write check point file " << time_chkpt << " seconds " << endl;
+     MPI_Allreduce( &time_chkpt_tmp, &time_chkpt, 1, MPI_DOUBLE, MPI_MAX, m_1d_communicator );
+     if( m_myRank == 0 )
+        cout << "Wallclock time to write check point file " << time_chkpt << " seconds " << endl;
        }
        // Force write all the TimeSeries files for restart
        double time_chkpt_timeseries=MPI_Wtime();
@@ -1081,12 +1325,12 @@ if ( (m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only record on converg
        {
          a_TimeSeries[ts]->writeFile();
        }
-	     double time_chkpt_timeseries_tmp=MPI_Wtime()-time_chkpt_timeseries;
+        double time_chkpt_timeseries_tmp=MPI_Wtime()-time_chkpt_timeseries;
        if( m_output_detailed_timing )
        {
-	        MPI_Allreduce( &time_chkpt_timeseries_tmp, &time_chkpt_timeseries, 1, MPI_DOUBLE, MPI_MAX, m_1d_communicator );
-	        if( m_myRank == 0 )
-	          cout << "Wallclock time to write all checkpoint time series files "
+           MPI_Allreduce( &time_chkpt_timeseries_tmp, &time_chkpt_timeseries, 1, MPI_DOUBLE, MPI_MAX, m_1d_communicator );
+           if( m_myRank == 0 )
+             cout << "Wallclock time to write all checkpoint time series files "
               << time_chkpt_timeseries << " seconds " << endl;
        }
    }
@@ -1113,13 +1357,13 @@ if ( (m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only record on converg
       exactSol( t, Up, AlphaVE, a_Sources ); // store exact solution in Up
 
       if (m_lamb_test)
-	normOfSurfaceDifference( Up, U, errInf, errL2, solInf, solL2, a_Sources);
+   normOfSurfaceDifference( Up, U, errInf, errL2, solInf, solL2, a_Sources);
       else if (m_point_source_test || m_rayleigh_wave_test)
-	normOfDifference( Up, U, errInf, errL2, solInf, a_Sources );
+   normOfDifference( Up, U, errInf, errL2, solInf, a_Sources );
 
       if ( proc_zero() )
 // output time, Linf-err, Linf-sol-err
-	fprintf(lf, "%e %15.7e %15.7e %15.7e\n", t, errInf, errL2, solInf);
+   fprintf(lf, "%e %15.7e %15.7e %15.7e\n", t, errInf, errL2, solInf);
     }
 
     // EQL check for end of time stepping in this iteration
@@ -1147,7 +1391,7 @@ if ( (m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only record on converg
     if( m_output_detailed_timing )
     {
        time_measure[19] = MPI_Wtime();
-	  
+     
        if (mOrder == 4)
        {
           time_sum[0] += time_measure[19]-time_measure[0]; // total
@@ -1240,13 +1484,13 @@ if ( (m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only record on converg
 // depending on the test case, we should compare in the interior, or only on the surface
 
       if (m_lamb_test)
-	normOfSurfaceDifference( Up, U, errInf, errL2, solInf, solL2, a_Sources);
+   normOfSurfaceDifference( Up, U, errInf, errL2, solInf, solL2, a_Sources);
       else
-	normOfDifference( Up, U, errInf, errL2, solInf, a_Sources );
+   normOfDifference( Up, U, errInf, errL2, solInf, a_Sources );
 
       if ( proc_zero() )
       {         
-	 printf("\n Final solution errors: Linf = %15.7e, L2 = %15.7e\n", errInf, errL2);
+    printf("\n Final solution errors: Linf = %15.7e, L2 = %15.7e\n", errInf, errL2);
 
 // output time, Linf-err, Linf-sol-err
          if ( m_error_log )
@@ -1263,14 +1507,14 @@ if ( (m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only record on converg
       {
          vector<Sarray> Aex(mNumberOfGrids), A(mNumberOfGrids);
          for( int g=0 ; g < mNumberOfGrids ; g++ )
-	 {
-	    Aex[g].copy(AlphaVEp[g][0]);
+    {
+       Aex[g].copy(AlphaVEp[g][0]);
             A[g].copy(AlphaVE[g][0]);
-	 }
-	 normOfDifference( Aex, A, errInf, errL2, solInf, a_Sources );
-	 if ( proc_zero() )
+    }
+    normOfDifference( Aex, A, errInf, errL2, solInf, a_Sources );
+    if ( proc_zero() )
          {
-	    printf("\n Final solution errors, attenuation: Linf = %15.7e, L2 = %15.7e\n", errInf, errL2);
+       printf("\n Final solution errors, attenuation: Linf = %15.7e, L2 = %15.7e\n", errInf, errL2);
             if ( m_error_log )
             {
                fprintf(lf, "Attenuation variables (errInf, errL2, solInf)\n");
@@ -1296,8 +1540,8 @@ if ( (m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only record on converg
    for( int g = 0; g <mNumberOfGrids; g++ )
    {
       for(int side=0; side < 6; side++)
-	 if( BCForcing[g][side] != NULL )
-	    delete[] BCForcing[g][side];
+    if( BCForcing[g][side] != NULL )
+       delete[] BCForcing[g][side];
       delete[] BCForcing[g];
    }
    for( int s = 0 ; s < point_sources.size(); s++ )
@@ -1309,7 +1553,7 @@ if ( (m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only record on converg
 
 //------------------------------------------------------------------------
 void EW::cycleSolutionArrays(vector<Sarray> & a_Um, vector<Sarray> & a_U, vector<Sarray> & a_Up, 
-			     vector<Sarray*> & a_AlphaVEm, vector<Sarray*> & a_AlphaVE, vector<Sarray*> & a_AlphaVEp)
+              vector<Sarray*> & a_AlphaVEm, vector<Sarray*> & a_AlphaVE, vector<Sarray*> & a_AlphaVEp)
  {
   for (int g=0; g<mNumberOfGrids; g++)
   {
@@ -1342,7 +1586,7 @@ void EW::cycleSolutionArrays(vector<Sarray> & a_Um, vector<Sarray> & a_U, vector
 //---------------------------------------------------------------------------
 void EW::enforceBC( vector<Sarray> & a_U, vector<Sarray>& a_Rho, vector<Sarray>& a_Mu, 
                     vector<Sarray>& a_Lambda,
-		    vector<Sarray*>& a_AlphaVE, float_sw4 t, vector<float_sw4 **> & a_BCForcing )
+          vector<Sarray*>& a_AlphaVE, float_sw4 t, vector<float_sw4 **> & a_BCForcing )
 {
   int ifirst, ilast, jfirst, jlast, kfirst, klast, nx, ny, nz;
   float_sw4 *u_ptr, *mu_ptr, *la_ptr, h;
@@ -1389,13 +1633,13 @@ void EW::enforceBC( vector<Sarray> & a_U, vector<Sarray>& a_Rho, vector<Sarray>&
     if( usingSupergrid() )
     {
 //FTNC       if( m_croutines )
-	  bcfortsg_ci( ifirst, ilast, jfirst, jlast, kfirst, klast, 
-		    wind_ptr, nx, ny, nz,
-		    u_ptr, h, bcType_ptr, m_sbop, mu_ptr, la_ptr, t,
-		    bforce_side0_ptr, bforce_side1_ptr, 
-		    bforce_side2_ptr, bforce_side3_ptr, 
-		    bforce_side4_ptr, bforce_side5_ptr, 
-		    om, ph, cv, m_sg_str_x[g], m_sg_str_y[g] );
+     bcfortsg_ci( ifirst, ilast, jfirst, jlast, kfirst, klast, 
+          wind_ptr, nx, ny, nz,
+          u_ptr, h, bcType_ptr, m_sbop, mu_ptr, la_ptr, t,
+          bforce_side0_ptr, bforce_side1_ptr, 
+          bforce_side2_ptr, bforce_side3_ptr, 
+          bforce_side4_ptr, bforce_side5_ptr, 
+          om, ph, cv, m_sg_str_x[g], m_sg_str_y[g] );
 //FTNC       else
 //FTNC	  bcfortsg( &ifirst, &ilast, &jfirst, &jlast, &kfirst, &klast, 
 //FTNC		    wind_ptr, &nx, &ny, &nz,
@@ -1407,11 +1651,11 @@ void EW::enforceBC( vector<Sarray> & a_U, vector<Sarray>& a_Rho, vector<Sarray>&
        int side;
        if( topo == 1 && m_bcType[g][4] == bStressFree )
        {
-	  side = 5;
+     side = 5;
 //FTNC	  if( m_croutines )
-	     freesurfcurvisg_ci( ifirst, ilast, jfirst, jlast, kfirst, klast,
-				 nz, side, u_ptr, mu_ptr, la_ptr, mMetric[g].c_ptr(),
-				 m_sbop, bforce_side4_ptr, m_sg_str_x[g], m_sg_str_y[g] );
+        freesurfcurvisg_ci( ifirst, ilast, jfirst, jlast, kfirst, klast,
+             nz, side, u_ptr, mu_ptr, la_ptr, mMetric[g].c_ptr(),
+             m_sbop, bforce_side4_ptr, m_sg_str_x[g], m_sg_str_y[g] );
 //FTNC	  else
 //FTNC	     freesurfcurvisg(&ifirst, &ilast, &jfirst, &jlast, &kfirst, &klast,
 //FTNC			     &nz, &side, u_ptr, mu_ptr, la_ptr, mMetric.c_ptr(),
@@ -1421,13 +1665,13 @@ void EW::enforceBC( vector<Sarray> & a_U, vector<Sarray>& a_Rho, vector<Sarray>&
     else
     {
 //FTNC       if( m_croutines )
-	  bcfort_ci( ifirst, ilast, jfirst, jlast, kfirst, klast, 
-		     wind_ptr, nx, ny, nz,
-		     u_ptr, h, bcType_ptr, m_sbop, mu_ptr, la_ptr, t,
-		     bforce_side0_ptr, bforce_side1_ptr, 
-		     bforce_side2_ptr, bforce_side3_ptr, 
-		     bforce_side4_ptr, bforce_side5_ptr, 
-		     om, ph, cv, topo );
+     bcfort_ci( ifirst, ilast, jfirst, jlast, kfirst, klast, 
+           wind_ptr, nx, ny, nz,
+           u_ptr, h, bcType_ptr, m_sbop, mu_ptr, la_ptr, t,
+           bforce_side0_ptr, bforce_side1_ptr, 
+           bforce_side2_ptr, bforce_side3_ptr, 
+           bforce_side4_ptr, bforce_side5_ptr, 
+           om, ph, cv, topo );
 //FTNC       else
 //FTNC	  bcfort( &ifirst, &ilast, &jfirst, &jlast, &kfirst, &klast, 
 //FTNC		  wind_ptr, &nx, &ny, &nz,
@@ -1439,20 +1683,20 @@ void EW::enforceBC( vector<Sarray> & a_U, vector<Sarray>& a_Rho, vector<Sarray>&
        int side;
        if( topo == 1 && m_bcType[g][4] == bStressFree )
        {
-	  side = 5;
+     side = 5;
 //FTNC	  if( m_croutines )
-	     freesurfcurvi_ci( ifirst, ilast, jfirst, jlast, kfirst, klast, nz,
-			       side, u_ptr, mu_ptr, la_ptr, mMetric[g].c_ptr(), m_sbop, bforce_side4_ptr );
+        freesurfcurvi_ci( ifirst, ilast, jfirst, jlast, kfirst, klast, nz,
+                side, u_ptr, mu_ptr, la_ptr, mMetric[g].c_ptr(), m_sbop, bforce_side4_ptr );
 //FTNC	  else
 //FTNC	     freesurfcurvi(&ifirst, &ilast, &jfirst, &jlast, &kfirst, &klast, &nz,
 //FTNC			   &side, u_ptr, mu_ptr, la_ptr, mMetric.c_ptr(), m_sbop, bforce_side4_ptr );
        }
        if( topo == 1 && m_bcType[g][5] == bStressFree )
        {
-	  side = 6;
+     side = 6;
 //FTNC	  if( m_croutines )
-	     freesurfcurvi_ci(ifirst, ilast, jfirst, jlast, kfirst, klast, nz,
-			      side, u_ptr, mu_ptr, la_ptr, mMetric[g].c_ptr(), m_sbop, bforce_side5_ptr );
+        freesurfcurvi_ci(ifirst, ilast, jfirst, jlast, kfirst, klast, nz,
+               side, u_ptr, mu_ptr, la_ptr, mMetric[g].c_ptr(), m_sbop, bforce_side5_ptr );
 //FTNC	  else
 //FTNC	     freesurfcurvi(&ifirst, &ilast, &jfirst, &jlast, &kfirst, &klast, &nz,
 //FTNC			   &side, u_ptr, mu_ptr, la_ptr, mMetric.c_ptr(), m_sbop, bforce_side5_ptr );
@@ -1637,7 +1881,7 @@ void EW::CurviCartIC( int gcart, vector<Sarray> &a_U, vector<Sarray>& a_Rho,
 
 //---------------------------------------------------------------------------
 void EW::enforceBCanisotropic( vector<Sarray> & a_U, vector<Sarray>& a_C,
-		    float_sw4 t, vector<float_sw4 **> & a_BCForcing )
+          float_sw4 t, vector<float_sw4 **> & a_BCForcing )
 {
   int g, ifirst, ilast, jfirst, jlast, kfirst, klast, nx, ny, nz;
   float_sw4 *u_ptr, *c_ptr, h;
@@ -1683,12 +1927,12 @@ void EW::enforceBCanisotropic( vector<Sarray> & a_U, vector<Sarray>& a_C,
     
 //FTNC    if( m_croutines )
        bcfortanisg_ci( ifirst, ilast, jfirst, jlast, kfirst, klast, 
-		    wind_ptr, nx, ny, nz,
-		    u_ptr, h, bcType_ptr, m_sbop, c_ptr, 
-		    bforce_side0_ptr, bforce_side1_ptr, 
-		    bforce_side2_ptr, bforce_side3_ptr, 
-		    bforce_side4_ptr, bforce_side5_ptr, 
-		    m_sg_str_x[g], m_sg_str_y[g] );
+          wind_ptr, nx, ny, nz,
+          u_ptr, h, bcType_ptr, m_sbop, c_ptr, 
+          bforce_side0_ptr, bforce_side1_ptr, 
+          bforce_side2_ptr, bforce_side3_ptr, 
+          bforce_side4_ptr, bforce_side5_ptr, 
+          m_sg_str_x[g], m_sg_str_y[g] );
 //FTNC    else
 //FTNC       bcfortanisg( &ifirst, &ilast, &jfirst, &jlast, &kfirst, &klast, 
 //FTNC		    wind_ptr, &nx, &ny, &nz,
@@ -1699,12 +1943,12 @@ void EW::enforceBCanisotropic( vector<Sarray> & a_U, vector<Sarray>& a_C,
 //FTNC		    m_sg_str_x[g], m_sg_str_y[g] );
        if( topographyExists() && g == mNumberOfGrids-1 && m_bcType[g][4] == bStressFree )
        {
-	  int fside = 5;
-	  float_sw4* cc_ptr = mCcurv.c_ptr();
+     int fside = 5;
+     float_sw4* cc_ptr = mCcurv.c_ptr();
 //FTNC	  if( m_croutines )
-	     bcfreesurfcurvani_ci( ifirst, ilast, jfirst, jlast, kfirst, klast,
-			       nz, u_ptr, cc_ptr, fside, m_sbop, bforce_side4_ptr,
-			       bforce_side5_ptr, m_sg_str_x[g], m_sg_str_y[g] );
+        bcfreesurfcurvani_ci( ifirst, ilast, jfirst, jlast, kfirst, klast,
+                nz, u_ptr, cc_ptr, fside, m_sbop, bforce_side4_ptr,
+                bforce_side5_ptr, m_sg_str_x[g], m_sg_str_y[g] );
 //FTNC	  else
 //FTNC	     bcfreesurfcurvani(&ifirst, &ilast, &jfirst, &jlast, &kfirst, &klast,
 //FTNC			       &nz, u_ptr, cc_ptr, &fside, m_sbop, bforce_side4_ptr,
@@ -1717,7 +1961,7 @@ void EW::enforceBCanisotropic( vector<Sarray> & a_U, vector<Sarray>& a_C,
         update_curvilinear_cartesian_interface( a_U );
      else
        if( m_myRank == 0 )
-	 printf("ERROR: curvilinear-Cartesian interface conditions for anisotropic materials not yet implemented\n");
+    printf("ERROR: curvilinear-Cartesian interface conditions for anisotropic materials not yet implemented\n");
        //        CurviCartIC( mNumberOfCartesianGrids-1, a_U, a_Mu, a_Lambda, t );
   }
   //  update_curvilinear_cartesian_interface( a_U );
@@ -1734,27 +1978,27 @@ void EW::update_curvilinear_cartesian_interface( vector<Sarray>& a_U )
 // inject solution values between lower boundary of gc and upper boundary of g
 #pragma omp parallel for
       for( int j = m_jStart[g] ; j <= m_jEnd[g]; j++ )
-	 for( int i = m_iStart[g]; i <= m_iEnd[g]; i++ )
-	 {
+    for( int i = m_iStart[g]; i <= m_iEnd[g]; i++ )
+    {
 // assign ghost points in the Cartesian grid
-	    for (int q = 0; q < m_ghost_points; q++) 
-	    {
-	       for( int c = 1; c <= nc ; c++ )
-		  a_U[g](c,i,j,m_kStart[g] + q) = a_U[gc](c,i,j,m_kEnd[gc]-2*m_ghost_points + q);
-	    }
+       for (int q = 0; q < m_ghost_points; q++) 
+       {
+          for( int c = 1; c <= nc ; c++ )
+        a_U[g](c,i,j,m_kStart[g] + q) = a_U[gc](c,i,j,m_kEnd[gc]-2*m_ghost_points + q);
+       }
 // assign ghost points in the Curvilinear grid
-	    for (int q = 0; q <= m_ghost_points; q++) // (overwrites solution on the common grid line)
-	    {
-	       for( int c = 1; c <= nc ; c++ )
-		  a_U[gc](c,i,j,m_kEnd[gc]-q) = a_U[g](c,i,j,m_kStart[g]+2*m_ghost_points - q);
-	    }
-	 }
+       for (int q = 0; q <= m_ghost_points; q++) // (overwrites solution on the common grid line)
+       {
+          for( int c = 1; c <= nc ; c++ )
+        a_U[gc](c,i,j,m_kEnd[gc]-q) = a_U[g](c,i,j,m_kStart[g]+2*m_ghost_points - q);
+       }
+    }
    }
 }
 //-----------------Mesh refinement interface condition for 4th order predictor-corrector scheme------------------------
 void EW::enforceIC( vector<Sarray>& a_Up, vector<Sarray> & a_U, vector<Sarray> & a_Um,
                     vector<Sarray*>& a_AlphaVEp, vector<Sarray*>& a_AlphaVE, vector<Sarray*>& a_AlphaVEm, 
-		    float_sw4 time, bool predictor, vector<Sarray> &F, vector<GridPointSource*> point_sources,
+          float_sw4 time, bool predictor, vector<Sarray> &F, vector<GridPointSource*> point_sources,
                     vector<Sarray>& a_Rho, vector<Sarray>& a_Mu, vector<Sarray>& a_Lambda, bool backward )
 {
    float_sw4 dt=mDt;
@@ -1765,7 +2009,7 @@ void EW::enforceIC( vector<Sarray>& a_Up, vector<Sarray> & a_U, vector<Sarray> &
    {
       // Interpolate between g and g+1, assume factor 2 refinement with at least three ghost points
       VERIFY2( m_ghost_points >= 3,
-		  "enforceIC Error: "<<
+        "enforceIC Error: "<<
                   "Number of ghost points must be three or more, not " << m_ghost_points );
 
       Sarray Unextf, Unextc, Bf, Bc, Uf_tt, Uc_tt;
@@ -1795,8 +2039,8 @@ void EW::enforceIC( vector<Sarray>& a_Up, vector<Sarray> & a_U, vector<Sarray> &
       dirichlet_hom_ic( a_Up[g], g, kc-1, true );
       if( m_doubly_periodic )
       {
-	 dirichlet_hom_ic( a_Up[g+1], g+1, kf+1, false ); // inside=false
-	 dirichlet_hom_ic( a_Up[g], g, kc-1, false );
+    dirichlet_hom_ic( a_Up[g+1], g+1, kf+1, false ); // inside=false
+    dirichlet_hom_ic( a_Up[g], g, kc-1, false );
       }
 
       if( predictor ) // In the predictor step, (Unextc, Unextf) represent the displacement after the corrector step
@@ -1807,7 +2051,7 @@ void EW::enforceIC( vector<Sarray>& a_Up, vector<Sarray> & a_U, vector<Sarray> &
 // compute_preliminary_corrector. 
 
 // get the interior contribution to the displacements on the interface for the corrector (depends on the corrector value of AlphaVEp)
-	 compute_preliminary_corrector( a_Up[g+1], a_U[g+1], a_Um[g+1],
+    compute_preliminary_corrector( a_Up[g+1], a_U[g+1], a_Um[g+1],
                                         a_AlphaVEp[g+1], a_AlphaVE[g+1], a_AlphaVEm[g+1],
                                         Uf_tt, Unextf, g+1, kf, time, F[g+1], point_sources,
                                         a_Rho[g+1], a_Mu[g+1], a_Lambda[g+1] );
@@ -1815,24 +2059,24 @@ void EW::enforceIC( vector<Sarray>& a_Up, vector<Sarray> & a_U, vector<Sarray> &
                                         a_AlphaVEp[g], a_AlphaVE[g], a_AlphaVEm[g],
                                         Uc_tt, Unextc, g, kc, time, F[g], point_sources, 
                                         a_Rho[g], a_Mu[g], a_Lambda[g] );
-	 if( !m_doubly_periodic )
-	 {
+    if( !m_doubly_periodic )
+    {
 // dirichlet conditions for Unextc in super-grid layer at time t+dt
             dirichlet_LRic( Unextc, g, kc, time+dt, 1 ); 
-	 }
+    }
       }
       else // In the corrector step, (Unextc, Unextf) represent the displacement after next predictor step
       {
-	 compute_preliminary_predictor( a_Up[g+1], a_U[g+1], a_AlphaVEp[g+1], Unextf, g+1, kf,  time+dt,
+    compute_preliminary_predictor( a_Up[g+1], a_U[g+1], a_AlphaVEp[g+1], Unextf, g+1, kf,  time+dt,
                                         F[g+1], point_sources, a_Rho[g+1], a_Mu[g+1], a_Lambda[g+1] );
-	 compute_preliminary_predictor( a_Up[g], a_U[g], a_AlphaVEp[g], Unextc, g, kc, time+dt, 
+    compute_preliminary_predictor( a_Up[g], a_U[g], a_AlphaVEp[g], Unextc, g, kc, time+dt, 
                                         F[g], point_sources, a_Rho[g], a_Mu[g], a_Lambda[g] );
 
-	 if( !m_doubly_periodic )
-	 {
+    if( !m_doubly_periodic )
+    {
 // dirichlet conditions for Unextc in super-grid layer at time t+2*dt
             dirichlet_LRic( Unextc, g, kc, time+2*dt, 1 ); 
-	 }
+    }
       }
 
       compute_icstresses2( a_Up[g+1], Bf, kf, mGridSize[g+1], a_Mu[g+1], a_Lambda[g+1],
@@ -1875,8 +2119,8 @@ void EW::enforceIC( vector<Sarray>& a_Up, vector<Sarray> & a_U, vector<Sarray> &
       // the sides where dirichlet boundary conditions are imposed. 
       if( !m_doubly_periodic )
       {
-	 dirichlet_hom_ic( a_Up[g+1], g+1, kf+1, false );
-	 dirichlet_hom_ic( a_Up[g], g, kc-1, false );
+    dirichlet_hom_ic( a_Up[g+1], g+1, kf+1, false );
+    dirichlet_hom_ic( a_Up[g], g, kc-1, false );
       }
       // Initial guesses for grid interface iteration
       gridref_initial_guess( a_Up[g+1], g+1, false );
@@ -1885,11 +2129,11 @@ void EW::enforceIC( vector<Sarray>& a_Up, vector<Sarray> & a_U, vector<Sarray> &
       float_sw4 cof = predictor ? 12 : 1;
       int is_periodic[2] ={0,0};
       if( m_doubly_periodic )
-	 is_periodic[0] = is_periodic[1] = 1;
+    is_periodic[0] = is_periodic[1] = 1;
       
       consintp( a_Up[g+1], Unextf, Bf, a_Mu[g+1], a_Lambda[g+1], a_Rho[g+1], mGridSize[g+1],
-		a_Up[g],   Unextc, Bc, a_Mu[g],   a_Lambda[g],   a_Rho[g],   mGridSize[g], 
-		cof, g, g+1, is_periodic );
+      a_Up[g],   Unextc, Bc, a_Mu[g],   a_Lambda[g],   a_Rho[g],   mGridSize[g], 
+      cof, g, g+1, is_periodic );
       //      CHECK_INPUT(false," controlled termination");
 
       // Finally, restore the ghost point values on the sides of the domain.
@@ -2027,7 +2271,7 @@ void EW::enforceIC2( vector<Sarray>& a_Up, vector<Sarray> & a_U, vector<Sarray> 
    {
       // Interpolate between g and g+1, assume factor 2 refinement with at least three ghost points
       VERIFY2( m_ghost_points >= 3,
-		  "enforceIC2 Error: "<<
+        "enforceIC2 Error: "<<
                   "Number of ghost points must be three or more, not " << m_ghost_points );
 
       Sarray Unextf, Unextc, Bf, Bc;
@@ -2053,8 +2297,8 @@ void EW::enforceIC2( vector<Sarray>& a_Up, vector<Sarray> & a_U, vector<Sarray> 
 
       if( m_doubly_periodic )
       {
-	 dirichlet_hom_ic( a_Up[g+1], g+1, kf+1, false ); // inside=false
-	 dirichlet_hom_ic( a_Up[g], g, kc-1, false );
+    dirichlet_hom_ic( a_Up[g+1], g+1, kf+1, false ); // inside=false
+    dirichlet_hom_ic( a_Up[g], g, kc-1, false );
       }
 
 //  compute contribution to the displacements at the next time level (Unextc, Unextf) from the interior grid points in Up
@@ -2123,7 +2367,7 @@ void EW::enforceIC2( vector<Sarray>& a_Up, vector<Sarray> & a_U, vector<Sarray> 
       float_sw4 cof = predictor ? 12 : 1;
       int is_periodic[2] ={0,0};
       if( m_doubly_periodic )
-	 is_periodic[0] = is_periodic[1] = 1;
+    is_periodic[0] = is_periodic[1] = 1;
 
 // // testing (twilight)
 //       initialData(time+mDt, a_Up, a_AlphaVEp);
@@ -2135,8 +2379,8 @@ void EW::enforceIC2( vector<Sarray>& a_Up, vector<Sarray> & a_U, vector<Sarray> 
       
 // Iteratively determine the ghost point values in Up to satisfy the jump conditions
       consintp( a_Up[g+1], Unextf, Bf, mMu[g+1], mLambda[g+1], mRho[g+1], mGridSize[g+1],
-		a_Up[g],   Unextc, Bc, mMu[g],   mLambda[g],   mRho[g],   mGridSize[g], 
-		cof, g, g+1, is_periodic);
+      a_Up[g],   Unextc, Bc, mMu[g],   mLambda[g],   mRho[g],   mGridSize[g], 
+      cof, g, g+1, is_periodic);
       //      CHECK_INPUT(false," controlled termination");
 
       // Finally, restore the corner ghost point values (above and below) the Dirichlet sides of the domain.
@@ -2261,37 +2505,37 @@ void EW::dirichlet_hom_ic( Sarray& U, int g, int k, bool inner )
       {
       // low i-side
 #pragma omp parallel for
-	 for( int j=m_jStart[g] ; j <= m_jEnd[g] ; j++ )
-	    for( int i=m_iStart[g] ; i <= 0 ; i++ )
-	       for( int c=1 ; c <= U.m_nc ; c++ )
-		  U(c,i,j,k) = 0;
+    for( int j=m_jStart[g] ; j <= m_jEnd[g] ; j++ )
+       for( int i=m_iStart[g] ; i <= 0 ; i++ )
+          for( int c=1 ; c <= U.m_nc ; c++ )
+        U(c,i,j,k) = 0;
       }
       if( m_iEndInt[g] == m_global_nx[g] )
       {
-	 // high i-side
+    // high i-side
 #pragma omp parallel for
-	 for( int j=m_jStart[g] ; j <= m_jEnd[g] ; j++ )
-	    for( int i=m_iEndInt[g]+1 ; i <= m_iEnd[g] ; i++ )
-	       for( int c=1 ; c <= U.m_nc ; c++ )
-		  U(c,i,j,k) = 0;
+    for( int j=m_jStart[g] ; j <= m_jEnd[g] ; j++ )
+       for( int i=m_iEndInt[g]+1 ; i <= m_iEnd[g] ; i++ )
+          for( int c=1 ; c <= U.m_nc ; c++ )
+        U(c,i,j,k) = 0;
       }
       if( m_jStartInt[g] == 1 )
       {
-	 // low j-side
+    // low j-side
 #pragma omp parallel for
-	 for( int j=m_jStart[g] ; j <= 0 ; j++ )
-	    for( int i=m_iStart[g] ; i <= m_iEnd[g] ; i++ )
-	       for( int c=1 ; c <= U.m_nc ; c++ )
-		  U(c,i,j,k) = 0;
+    for( int j=m_jStart[g] ; j <= 0 ; j++ )
+       for( int i=m_iStart[g] ; i <= m_iEnd[g] ; i++ )
+          for( int c=1 ; c <= U.m_nc ; c++ )
+        U(c,i,j,k) = 0;
       }
       if( m_jEndInt[g] == m_global_ny[g] )
       {
-	 // high j-side
+    // high j-side
 #pragma omp parallel for
-	 for( int j=m_jEndInt[g]+1 ; j <= m_jEnd[g] ; j++ )
-	    for( int i=m_iStart[g] ; i <= m_iEnd[g] ; i++ )
-	       for( int c=1 ; c <= U.m_nc ; c++ )
-		  U(c,i,j,k) = 0;
+    for( int j=m_jEndInt[g]+1 ; j <= m_jEnd[g] ; j++ )
+       for( int i=m_iStart[g] ; i <= m_iEnd[g] ; i++ )
+          for( int c=1 ; c <= U.m_nc ; c++ )
+        U(c,i,j,k) = 0;
       }
    }
    else
@@ -2301,24 +2545,24 @@ void EW::dirichlet_hom_ic( Sarray& U, int g, int k, bool inner )
       if( m_iStartInt[g] == 1 )
          ib = 1;
       else
-	 ib = m_iStart[g];
+    ib = m_iStart[g];
       if( m_iEndInt[g] == m_global_nx[g] )
-	 ie = m_global_nx[g];
+    ie = m_global_nx[g];
       else
-	 ie = m_iEnd[g];
+    ie = m_iEnd[g];
       if( m_jStartInt[g] == 1 )
-	 jb = 1;
+    jb = 1;
       else
-	 jb = m_jStart[g];
+    jb = m_jStart[g];
       if( m_jEndInt[g] == m_global_ny[g] )
-	 je = m_global_ny[g];
+    je = m_global_ny[g];
       else
-	 je = m_jEnd[g];
+    je = m_jEnd[g];
 #pragma omp parallel for
       for( int j=jb ; j <= je ; j++ )
-	 for( int i=ib ; i <= ie ; i++ )
-	    for( int c=1 ; c <= U.m_nc ; c++ )
-	       U(c,i,j,k) = 0;
+    for( int i=ib ; i <= ie ; i++ )
+       for( int c=1 ; c <= U.m_nc ; c++ )
+          U(c,i,j,k) = 0;
    }
 }
 
@@ -2337,10 +2581,10 @@ void EW::dirichlet_twilight_ic( Sarray& U, int g, int kic, float_sw4 t )
       float_sw4 h  = mGridSize[g];
       float_sw4* u_ptr = U.c_ptr();
 //FTNC      if( m_croutines )
-	 twilightfortwind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g],
-			      kdb, kde, u_ptr, t, om, cv, ph, 
-			      h, m_zmin[g],
-			      i1, i2, j1, j2, kic, kic );      
+    twilightfortwind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g],
+               kdb, kde, u_ptr, t, om, cv, ph, 
+               h, m_zmin[g],
+               i1, i2, j1, j2, kic, kic );      
 //FTNC      else
 //FTNC	 twilightfortwind( &m_iStart[g], &m_iEnd[g], &m_jStart[g], &m_jEnd[g],
 //FTNC			   &kdb, &kde, u_ptr, &t, &om, &cv, &ph, 
@@ -2364,39 +2608,39 @@ void EW::dirichlet_LRic( Sarray& U, int g, int kic, float_sw4 t, int adj )
    {
       if( m_iStartInt[g] == 1 )
       {
-	 // low i-side
+    // low i-side
 #pragma omp parallel for
-	 for( int j=m_jStart[g] ; j <= m_jEnd[g] ; j++ )
-	    for( int i=m_iStart[g] ; i <= 1-adj ; i++ )
-	       for( int c=1 ; c <= U.m_nc ; c++ )
-		  U(c,i,j,kic) = 0;
+    for( int j=m_jStart[g] ; j <= m_jEnd[g] ; j++ )
+       for( int i=m_iStart[g] ; i <= 1-adj ; i++ )
+          for( int c=1 ; c <= U.m_nc ; c++ )
+        U(c,i,j,kic) = 0;
       }
       if( m_iEndInt[g] == m_global_nx[g] )
       {
-	 // high i-side
+    // high i-side
 #pragma omp parallel for
-	 for( int j=m_jStart[g] ; j <= m_jEnd[g] ; j++ )
-	    for( int i=m_iEndInt[g]+adj ; i <= m_iEnd[g] ; i++ )
-	       for( int c=1 ; c <= U.m_nc ; c++ )
-		  U(c,i,j,kic) = 0;
+    for( int j=m_jStart[g] ; j <= m_jEnd[g] ; j++ )
+       for( int i=m_iEndInt[g]+adj ; i <= m_iEnd[g] ; i++ )
+          for( int c=1 ; c <= U.m_nc ; c++ )
+        U(c,i,j,kic) = 0;
       }
       if( m_jStartInt[g] == 1 )
       {
-	 // low j-side
+    // low j-side
 #pragma omp parallel for
-	 for( int j=m_jStart[g] ; j <= 1-adj ; j++ )
-	    for( int i=m_iStart[g] ; i <= m_iEnd[g] ; i++ )
-	       for( int c=1 ; c <= U.m_nc ; c++ )
-		  U(c,i,j,kic) = 0;
+    for( int j=m_jStart[g] ; j <= 1-adj ; j++ )
+       for( int i=m_iStart[g] ; i <= m_iEnd[g] ; i++ )
+          for( int c=1 ; c <= U.m_nc ; c++ )
+        U(c,i,j,kic) = 0;
       }
       if( m_jEndInt[g] == m_global_ny[g] )
       {
-	 // high j-side
+    // high j-side
 #pragma omp parallel for
-	 for( int j=m_jEndInt[g]+adj ; j <= m_jEnd[g] ; j++ )
-	    for( int i=m_iStart[g] ; i <= m_iEnd[g] ; i++ )
-	       for( int c=1 ; c <= U.m_nc ; c++ )
-		  U(c,i,j,kic) = 0;
+    for( int j=m_jEndInt[g]+adj ; j <= m_jEnd[g] ; j++ )
+       for( int i=m_iStart[g] ; i <= m_iEnd[g] ; i++ )
+          for( int c=1 ; c <= U.m_nc ; c++ )
+        U(c,i,j,kic) = 0;
       }
    }
    else
@@ -2408,13 +2652,13 @@ void EW::dirichlet_LRic( Sarray& U, int g, int kic, float_sw4 t, int adj )
       float_sw4* u_ptr = U.c_ptr();
       if( m_iStartInt[g] == 1 )
       {
-	 // low i-side
-	 int i1 = m_iStart[g], i2=m_iStartInt[g]-adj;
-	 int j1 = m_jStart[g], j2=m_jEnd[g];
+    // low i-side
+    int i1 = m_iStart[g], i2=m_iStartInt[g]-adj;
+    int j1 = m_jStart[g], j2=m_jEnd[g];
 //FTNC	 if( m_croutines )
-	    twilightfortwind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g],
-			      kdb, kde, u_ptr, t, om, cv, ph, 
-			      h, m_zmin[g], i1, i2, j1, j2, kic, kic );
+       twilightfortwind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g],
+               kdb, kde, u_ptr, t, om, cv, ph, 
+               h, m_zmin[g], i1, i2, j1, j2, kic, kic );
 //FTNC	 else
 //FTNC	    twilightfortwind( &m_iStart[g], &m_iEnd[g], &m_jStart[g], &m_jEnd[g],
 //FTNC			      &kdb, &kde, u_ptr, &t, &om, &cv, &ph, 
@@ -2423,13 +2667,13 @@ void EW::dirichlet_LRic( Sarray& U, int g, int kic, float_sw4 t, int adj )
       }
       if( m_iEndInt[g] == m_global_nx[g] )
       {
-	 // high i-side
-	 int i1 = m_iEndInt[g]+adj, i2=m_iEnd[g];
-	 int j1 = m_jStart[g], j2=m_jEnd[g];
+    // high i-side
+    int i1 = m_iEndInt[g]+adj, i2=m_iEnd[g];
+    int j1 = m_jStart[g], j2=m_jEnd[g];
 //FTNC	 if( m_croutines )
-	    twilightfortwind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g],
-				 kdb, kde, u_ptr, t, om, cv, ph, 
-				 h, m_zmin[g], i1, i2, j1, j2, kic, kic );
+       twilightfortwind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g],
+             kdb, kde, u_ptr, t, om, cv, ph, 
+             h, m_zmin[g], i1, i2, j1, j2, kic, kic );
 //FTNC	 else
 //FTNC	    twilightfortwind( &m_iStart[g], &m_iEnd[g], &m_jStart[g], &m_jEnd[g],
 //FTNC			      &kdb, &kde, u_ptr, &t, &om, &cv, &ph, 
@@ -2438,13 +2682,13 @@ void EW::dirichlet_LRic( Sarray& U, int g, int kic, float_sw4 t, int adj )
       }
       if( m_jStartInt[g] == 1 )
       {
-	 // low j-side
-	 int i1 = m_iStart[g], i2=m_iEnd[g];
-	 int j1 = m_jStart[g], j2=m_jStartInt[g]-adj;
+    // low j-side
+    int i1 = m_iStart[g], i2=m_iEnd[g];
+    int j1 = m_jStart[g], j2=m_jStartInt[g]-adj;
 //FTNC	 if( m_croutines )
-	    twilightfortwind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g],
-				 kdb, kde, u_ptr, t, om, cv, ph, 
-				 h, m_zmin[g], i1, i2, j1, j2, kic, kic );
+       twilightfortwind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g],
+             kdb, kde, u_ptr, t, om, cv, ph, 
+             h, m_zmin[g], i1, i2, j1, j2, kic, kic );
 //FTNC	 else
 //FTNC	    twilightfortwind( &m_iStart[g], &m_iEnd[g], &m_jStart[g], &m_jEnd[g],
 //FTNC			      &kdb, &kde, u_ptr, &t, &om, &cv, &ph, 
@@ -2453,13 +2697,13 @@ void EW::dirichlet_LRic( Sarray& U, int g, int kic, float_sw4 t, int adj )
       }
       if( m_jEndInt[g] == m_global_ny[g] )
       {
-	 // high j-side
-	 int i1 = m_iStart[g], i2=m_iEnd[g];
-	 int j1 = m_jEndInt[g]+adj, j2=m_jEnd[g];
+    // high j-side
+    int i1 = m_iStart[g], i2=m_iEnd[g];
+    int j1 = m_jEndInt[g]+adj, j2=m_jEnd[g];
 //FTNC	 if( m_croutines )
-	    twilightfortwind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g],
-				 kdb, kde, u_ptr, t, om, cv, ph, 
-				 h, m_zmin[g],i1, i2, j1, j2, kic, kic );
+       twilightfortwind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g],
+             kdb, kde, u_ptr, t, om, cv, ph, 
+             h, m_zmin[g],i1, i2, j1, j2, kic, kic );
 //FTNC	 else
 //FTNC	    twilightfortwind( &m_iStart[g], &m_iEnd[g], &m_jStart[g], &m_jEnd[g],
 //FTNC			      &kdb, &kde, u_ptr, &t, &om, &cv, &ph, 
@@ -2486,39 +2730,39 @@ void EW::dirichlet_LRstress( Sarray& B, int g, int kic, float_sw4 t, int adj )
    {
       if( m_iStartInt[g] == 1 )
       {
-	 // low i-side
+    // low i-side
 #pragma omp parallel for
-	 for( int j=m_jStart[g] ; j <= m_jEnd[g] ; j++ )
-	    for( int i=m_iStart[g] ; i <= 1-adj ; i++ )
-	       for( int c=1 ; c <= B.m_nc ; c++ )
-		  B(c,i,j,kic) = 0;
+    for( int j=m_jStart[g] ; j <= m_jEnd[g] ; j++ )
+       for( int i=m_iStart[g] ; i <= 1-adj ; i++ )
+          for( int c=1 ; c <= B.m_nc ; c++ )
+        B(c,i,j,kic) = 0;
       }
       if( m_iEndInt[g] == m_global_nx[g] )
       {
-	 // high i-side
+    // high i-side
 #pragma omp parallel for
-	 for( int j=m_jStart[g] ; j <= m_jEnd[g] ; j++ )
-	    for( int i=m_iEndInt[g]+adj ; i <= m_iEnd[g] ; i++ )
-	       for( int c=1 ; c <= B.m_nc ; c++ )
-		  B(c,i,j,kic) = 0;
+    for( int j=m_jStart[g] ; j <= m_jEnd[g] ; j++ )
+       for( int i=m_iEndInt[g]+adj ; i <= m_iEnd[g] ; i++ )
+          for( int c=1 ; c <= B.m_nc ; c++ )
+        B(c,i,j,kic) = 0;
       }
       if( m_jStartInt[g] == 1 )
       {
-	 // low j-side
-	 for( int j=m_jStart[g] ; j <= 1-adj ; j++ )
+    // low j-side
+    for( int j=m_jStart[g] ; j <= 1-adj ; j++ )
 #pragma omp parallel for
-	    for( int i=m_iStart[g] ; i <= m_iEnd[g] ; i++ )
-	       for( int c=1 ; c <= B.m_nc ; c++ )
-		  B(c,i,j,kic) = 0;
+       for( int i=m_iStart[g] ; i <= m_iEnd[g] ; i++ )
+          for( int c=1 ; c <= B.m_nc ; c++ )
+        B(c,i,j,kic) = 0;
       }
       if( m_jEndInt[g] == m_global_ny[g] )
       {
-	 // high j-side
-	 for( int j=m_jEndInt[g]+adj ; j <= m_jEnd[g] ; j++ )
+    // high j-side
+    for( int j=m_jEndInt[g]+adj ; j <= m_jEnd[g] ; j++ )
 #pragma omp parallel for
-	    for( int i=m_iStart[g] ; i <= m_iEnd[g] ; i++ )
-	       for( int c=1 ; c <= B.m_nc ; c++ )
-		  B(c,i,j,kic) = 0;
+       for( int i=m_iStart[g] ; i <= m_iEnd[g] ; i++ )
+          for( int c=1 ; c <= B.m_nc ; c++ )
+        B(c,i,j,kic) = 0;
       }
    }
    else // twilight forcing below
@@ -2554,16 +2798,16 @@ void EW::dirichlet_LRstress( Sarray& B, int g, int kic, float_sw4 t, int adj )
 
       if( m_iStartInt[g] == 1 )
       {
-	 // low i-side
-	 int i1 = m_iStart[g], i2=m_iStartInt[g]-adj;
-	 int j1 = m_jStart[g], j2=m_jEnd[g];
+    // low i-side
+    int i1 = m_iStart[g], i2=m_iStartInt[g]-adj;
+    int j1 = m_jStart[g], j2=m_jEnd[g];
          if( usingSupergrid() )
          {
 // assigns B
 //FTNC	    if( m_croutines )
-	       twfrsurfzsg_wind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g], m_kStart[g], m_kEnd[g],
-				    h, kic, t, om, cv, ph, omstrx, omstry,
-				    b_ptr, mu_ptr, la_ptr, m_zmin[g], i1, i2, j1, j2 );
+          twfrsurfzsg_wind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g], m_kStart[g], m_kEnd[g],
+                h, kic, t, om, cv, ph, omstrx, omstry,
+                b_ptr, mu_ptr, la_ptr, m_zmin[g], i1, i2, j1, j2 );
 //FTNC	    else
 //FTNC	       twfrsurfzsg_wind( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g], m_kStart[g], m_kEnd[g],
 //FTNC				 h, kic, t, om, cv, ph, omstrx, omstry,
@@ -2572,7 +2816,7 @@ void EW::dirichlet_LRstress( Sarray& B, int g, int kic, float_sw4 t, int adj )
             {
 // adds attenuation to B
 //FTNC	       if( m_croutines )
-		  twfrsurfzsg_att_wind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g], m_kStart[g], m_kEnd[g],
+        twfrsurfzsg_att_wind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g], m_kStart[g], m_kEnd[g],
                                      h, kic, t, om, cv, ph, omstrx, omstry,
                                      b_ptr, mua_ptr, laa_ptr, m_zmin[g], i1, i2, j1, j2 );
 //FTNC	       else
@@ -2585,8 +2829,8 @@ void EW::dirichlet_LRstress( Sarray& B, int g, int kic, float_sw4 t, int adj )
          {
 // assigns B
 //FTNC	    if( m_croutines )
-	       twfrsurfz_wind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g], m_kStart[g], m_kEnd[g],
-			       h, kic, t, om, cv, ph, b_ptr, mu_ptr, la_ptr, m_zmin[g], i1, i2, j1, j2 );
+          twfrsurfz_wind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g], m_kStart[g], m_kEnd[g],
+                h, kic, t, om, cv, ph, b_ptr, mu_ptr, la_ptr, m_zmin[g], i1, i2, j1, j2 );
 //FTNC	    else
 //FTNC	       twfrsurfz_wind( &m_iStart[g], &m_iEnd[g], &m_jStart[g], &m_jEnd[g], &m_kStart[g], &m_kEnd[g],
 //FTNC			       &h, &kic, &t, &om, &cv, &ph, b_ptr, mu_ptr, la_ptr, &m_zmin[g], &i1, &i2, &j1, &j2 );
@@ -2594,7 +2838,7 @@ void EW::dirichlet_LRstress( Sarray& B, int g, int kic, float_sw4 t, int adj )
             {
 // adds attenuation to B
 //FTNC	       if( m_croutines )
-		  twfrsurfz_att_wind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g], m_kStart[g], m_kEnd[g],
+        twfrsurfz_att_wind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g], m_kStart[g], m_kEnd[g],
                                    h, kic, t, om, cv, ph, b_ptr, mua_ptr, laa_ptr, m_zmin[g], i1, i2, j1, j2 );
 //FTNC	       else
 //FTNC		  twfrsurfz_att_wind( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g], m_kStart[g], m_kEnd[g],
@@ -2605,14 +2849,14 @@ void EW::dirichlet_LRstress( Sarray& B, int g, int kic, float_sw4 t, int adj )
       
       if( m_iEndInt[g] == m_global_nx[g] )
       {
-	 // high i-side
-	 int i1 = m_iEndInt[g]+adj, i2=m_iEnd[g];
-	 int j1 = m_jStart[g], j2=m_jEnd[g];
+    // high i-side
+    int i1 = m_iEndInt[g]+adj, i2=m_iEnd[g];
+    int j1 = m_jStart[g], j2=m_jEnd[g];
          if( usingSupergrid() )
          {
 // assigns B
 //FTNC	    if( m_croutines )
-	       twfrsurfzsg_wind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g], m_kStart[g], m_kEnd[g],
+          twfrsurfzsg_wind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g], m_kStart[g], m_kEnd[g],
                               h, kic, t, om, cv, ph, omstrx, omstry,
                               b_ptr, mu_ptr, la_ptr, m_zmin[g], i1, i2, j1, j2 );
 //FTNC	    else
@@ -2623,7 +2867,7 @@ void EW::dirichlet_LRstress( Sarray& B, int g, int kic, float_sw4 t, int adj )
             {
 // adds attenuation to B
 //FTNC	       if( m_croutines )
-		  twfrsurfzsg_att_wind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g], m_kStart[g], m_kEnd[g],
+        twfrsurfzsg_att_wind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g], m_kStart[g], m_kEnd[g],
                                      h, kic, t, om, cv, ph, omstrx, omstry,
                                      b_ptr, mua_ptr, laa_ptr, m_zmin[g], i1, i2, j1, j2 );
 //FTNC	       else
@@ -2636,7 +2880,7 @@ void EW::dirichlet_LRstress( Sarray& B, int g, int kic, float_sw4 t, int adj )
          {
 // assigns B
 //FTNC	    if( m_croutines )
-	       twfrsurfz_wind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g], m_kStart[g], m_kEnd[g],
+          twfrsurfz_wind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g], m_kStart[g], m_kEnd[g],
                             h, kic, t, om, cv, ph, b_ptr, 
                             mu_ptr, la_ptr, m_zmin[g],
                             i1, i2, j1, j2 );
@@ -2649,7 +2893,7 @@ void EW::dirichlet_LRstress( Sarray& B, int g, int kic, float_sw4 t, int adj )
             {
 // adds attenuation to B
 //FTNC	       if( m_croutines )
-		  twfrsurfz_att_wind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g], m_kStart[g], m_kEnd[g],
+        twfrsurfz_att_wind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g], m_kStart[g], m_kEnd[g],
                                    h, kic, t, om, cv, ph, b_ptr, mua_ptr, laa_ptr, m_zmin[g], i1, i2, j1, j2 );
 //FTNC	       else
 //FTNC		  twfrsurfz_att_wind( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g], m_kStart[g], m_kEnd[g],
@@ -2660,14 +2904,14 @@ void EW::dirichlet_LRstress( Sarray& B, int g, int kic, float_sw4 t, int adj )
       
       if( m_jStartInt[g] == 1 )
       {
-	 // low j-side
-	 int i1 = m_iStart[g], i2=m_iEnd[g];
-	 int j1 = m_jStart[g], j2=m_jStartInt[g]-adj;
+    // low j-side
+    int i1 = m_iStart[g], i2=m_iEnd[g];
+    int j1 = m_jStart[g], j2=m_jStartInt[g]-adj;
          if( usingSupergrid() )
          {
 // assigns B
 //FTNC	    if( m_croutines )
-	       twfrsurfzsg_wind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g], m_kStart[g], m_kEnd[g],
+          twfrsurfzsg_wind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g], m_kStart[g], m_kEnd[g],
                               h, kic, t, om, cv, ph, omstrx, omstry,
                               b_ptr, mu_ptr, la_ptr, m_zmin[g], i1, i2, j1, j2 );
 //FTNC	    else
@@ -2678,7 +2922,7 @@ void EW::dirichlet_LRstress( Sarray& B, int g, int kic, float_sw4 t, int adj )
             {
 // adds attenuation to B
 //FTNC	       if( m_croutines )
-		  twfrsurfzsg_att_wind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g], m_kStart[g], m_kEnd[g],
+        twfrsurfzsg_att_wind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g], m_kStart[g], m_kEnd[g],
                                      h, kic, t, om, cv, ph, omstrx, omstry,
                                      b_ptr, mua_ptr, laa_ptr, m_zmin[g], i1, i2, j1, j2 );
 //FTNC	       else
@@ -2691,7 +2935,7 @@ void EW::dirichlet_LRstress( Sarray& B, int g, int kic, float_sw4 t, int adj )
          {
 // assigns B
 //FTNC	    if( m_croutines )
-	       twfrsurfz_wind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g], m_kStart[g], m_kEnd[g],
+          twfrsurfz_wind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g], m_kStart[g], m_kEnd[g],
                             h, kic, t, om, cv, ph, b_ptr, 
                             mu_ptr, la_ptr, m_zmin[g],
                             i1, i2, j1, j2 );
@@ -2704,7 +2948,7 @@ void EW::dirichlet_LRstress( Sarray& B, int g, int kic, float_sw4 t, int adj )
             {
 // adds attenuation to B
 //FTNC	       if( m_croutines )
-		  twfrsurfz_att_wind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g], m_kStart[g], m_kEnd[g],
+        twfrsurfz_att_wind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g], m_kStart[g], m_kEnd[g],
                                    h, kic, t, om, cv, ph, b_ptr, mua_ptr, laa_ptr, m_zmin[g], i1, i2, j1, j2 );
 //FTNC	       else
 //FTNC		  twfrsurfz_att_wind( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g], m_kStart[g], m_kEnd[g],
@@ -2715,14 +2959,14 @@ void EW::dirichlet_LRstress( Sarray& B, int g, int kic, float_sw4 t, int adj )
       
       if( m_jEndInt[g] == m_global_ny[g] )
       {
-	 // high j-side
-	 int i1 = m_iStart[g], i2=m_iEnd[g];
-	 int j1 = m_jEndInt[g]+adj, j2=m_jEnd[g];
+    // high j-side
+    int i1 = m_iStart[g], i2=m_iEnd[g];
+    int j1 = m_jEndInt[g]+adj, j2=m_jEnd[g];
          if( usingSupergrid() )
          {
 // assigns B
 //FTNC	    if( m_croutines )
-	       twfrsurfzsg_wind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g], m_kStart[g], m_kEnd[g],
+          twfrsurfzsg_wind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g], m_kStart[g], m_kEnd[g],
                               h, kic, t, om, cv, ph, omstrx, omstry,
                               b_ptr, mu_ptr, la_ptr, m_zmin[g], i1, i2, j1, j2 );
 //FTNC	    else
@@ -2733,7 +2977,7 @@ void EW::dirichlet_LRstress( Sarray& B, int g, int kic, float_sw4 t, int adj )
             {
 // adds attenuation to B
 //FTNC	       if( m_croutines )
-		  twfrsurfzsg_att_wind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g], m_kStart[g], m_kEnd[g],
+        twfrsurfzsg_att_wind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g], m_kStart[g], m_kEnd[g],
                                      h, kic, t, om, cv, ph, omstrx, omstry,
                                      b_ptr, mua_ptr, laa_ptr, m_zmin[g], i1, i2, j1, j2 );
 //FTNC	       else
@@ -2746,7 +2990,7 @@ void EW::dirichlet_LRstress( Sarray& B, int g, int kic, float_sw4 t, int adj )
          {
 // assigns B
 //FTNC	    if( m_croutines )
-	       twfrsurfz_wind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g], m_kStart[g], m_kEnd[g],
+          twfrsurfz_wind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g], m_kStart[g], m_kEnd[g],
                             h, kic, t, om, cv, ph, b_ptr, 
                             mu_ptr, la_ptr, m_zmin[g],
                             i1, i2, j1, j2 );
@@ -2759,7 +3003,7 @@ void EW::dirichlet_LRstress( Sarray& B, int g, int kic, float_sw4 t, int adj )
             {
 // adds attenuation to B
 //FTNC	       if( m_croutines )
-		  twfrsurfz_att_wind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g], m_kStart[g], m_kEnd[g],
+        twfrsurfz_att_wind_ci( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g], m_kStart[g], m_kEnd[g],
                                    h, kic, t, om, cv, ph, b_ptr, mua_ptr, laa_ptr, m_zmin[g], i1, i2, j1, j2 );
 //FTNC	       else
 //FTNC		  twfrsurfz_att_wind( m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g], m_kStart[g], m_kEnd[g],
@@ -2808,17 +3052,17 @@ void EW::gridref_initial_guess( Sarray& u, int g, bool upper )
    for( int j=jb ; j <= je ; j++ )
       for( int i=ib ; i <= ie ; i++ )
       {
-	 u(1,i,j,k) = u(1,i,j,k+s);
-	 u(2,i,j,k) = u(2,i,j,k+s);
-	 u(3,i,j,k) = u(3,i,j,k+s);
+    u(1,i,j,k) = u(1,i,j,k+s);
+    u(2,i,j,k) = u(2,i,j,k+s);
+    u(3,i,j,k) = u(3,i,j,k+s);
       }
 }
 
 //-----------------------------------------------------------------------
 void EW::compute_preliminary_corrector( Sarray& a_Up, Sarray& a_U, Sarray& a_Um,
                                         Sarray* a_AlphaVEp, Sarray* a_AlphaVE, Sarray* a_AlphaVEm,
-					Sarray& Utt, Sarray& Unext, int g, int kic, float_sw4 t, 
-					Sarray &Ftt, vector<GridPointSource*> point_sources,
+               Sarray& Utt, Sarray& Unext, int g, int kic, float_sw4 t, 
+               Sarray &Ftt, vector<GridPointSource*> point_sources,
                                         Sarray& a_Rho, Sarray& a_Mu, Sarray& a_Lambda )
 {
    //
@@ -2833,7 +3077,7 @@ void EW::compute_preliminary_corrector( Sarray& a_Up, Sarray& a_U, Sarray& a_Um,
 
 //FTNC   if (m_croutines) // optimized C-version for reversed index ordering
      dpdmt_wind( Utt.m_ib, Utt.m_ie, Utt.m_jb, Utt.m_je, Utt.m_kb, Utt.m_ke, a_U.m_kb, a_U.m_ke,
-		 a_Up.c_ptr(), a_U.c_ptr(), a_Um.c_ptr(), Utt.c_ptr(), idt2 );
+       a_Up.c_ptr(), a_U.c_ptr(), a_Um.c_ptr(), Utt.c_ptr(), idt2 );
 //FTNC   else
 //FTNC   {
 //FTNC     for( int k=Utt.m_kb ; k <= Utt.m_ke ; k++ )
@@ -2864,9 +3108,9 @@ void EW::compute_preliminary_corrector( Sarray& a_Up, Sarray& a_U, Sarray& a_Um,
 
 // there are C and Fortran versions of this routine that are selected by the Makefile
    rhs4th3wind( ib, ie, jb, je, kb, ke, nz, m_onesided[g], m_acof,
-		       m_bope, m_ghcof, Lutt.c_ptr(), Utt.c_ptr(), a_Mu.c_ptr(),
-		       a_Lambda.c_ptr(), mGridSize[g], m_sg_str_x[g], m_sg_str_y[g],
-		       m_sg_str_z[g], op, kbu, keu, kic, kic );
+             m_bope, m_ghcof, Lutt.c_ptr(), Utt.c_ptr(), a_Mu.c_ptr(),
+             a_Lambda.c_ptr(), mGridSize[g], m_sg_str_x[g], m_sg_str_y[g],
+             m_sg_str_z[g], op, kbu, keu, kic, kic );
 
 // Plan: 1) loop over all mechanisms, 2) precompute d^2 alpha/dt^2 and store in Utt, 3) accumulate visco-elastic stresses
    if( m_use_attenuation && m_number_mechanisms > 0 )
@@ -2891,10 +3135,10 @@ void EW::compute_preliminary_corrector( Sarray& a_Up, Sarray& a_U, Sarray& a_Um,
 // NEW June 13, 2017: add in visco-elastic terms
          float_sw4* mua_ptr = mMuVE[g][a].c_ptr();
          float_sw4* lambdaa_ptr = mLambdaVE[g][a].c_ptr();
-	 rhs4th3wind( ib, ie, jb, je, kb, ke, nz, m_onesided[g], m_acof_no_gp, 
-			     m_bope, m_ghcof_no_gp, Lutt.c_ptr(), Utt.c_ptr(), mua_ptr, //use stencil WITHOUT ghost points
-			     lambdaa_ptr, mGridSize[g], m_sg_str_x[g], m_sg_str_y[g],
-			     m_sg_str_z[g], op, kbu, keu, kic, kic );
+    rhs4th3wind( ib, ie, jb, je, kb, ke, nz, m_onesided[g], m_acof_no_gp, 
+              m_bope, m_ghcof_no_gp, Lutt.c_ptr(), Utt.c_ptr(), mua_ptr, //use stencil WITHOUT ghost points
+              lambdaa_ptr, mGridSize[g], m_sg_str_x[g], m_sg_str_y[g],
+              m_sg_str_z[g], op, kbu, keu, kic, kic );
       } // end for a      
    } // end if using attenuation
    
@@ -2950,10 +3194,10 @@ void EW::compute_preliminary_corrector( Sarray& a_Up, Sarray& a_U, Sarray& a_Um,
 #pragma omp simd
        for( int i=Unext.m_ib+2 ; i <= Unext.m_ie-2 ; i++ )
        {
-	 float_sw4 irho=cof/a_Rho(i,j,kic);
-	 Unext(1,i,j,kic) = a_Up(1,i,j,kic) + irho*(Lutt(1,i,j,kic)+Ftt(1,i,j,kic)); // +force(1,i,j,kic));
-	 Unext(2,i,j,kic) = a_Up(2,i,j,kic) + irho*(Lutt(2,i,j,kic)+Ftt(2,i,j,kic)); // +force(2,i,j,kic));
-	 Unext(3,i,j,kic) = a_Up(3,i,j,kic) + irho*(Lutt(3,i,j,kic)+Ftt(3,i,j,kic));//+force(3,i,j,kic));
+    float_sw4 irho=cof/a_Rho(i,j,kic);
+    Unext(1,i,j,kic) = a_Up(1,i,j,kic) + irho*(Lutt(1,i,j,kic)+Ftt(1,i,j,kic)); // +force(1,i,j,kic));
+    Unext(2,i,j,kic) = a_Up(2,i,j,kic) + irho*(Lutt(2,i,j,kic)+Ftt(2,i,j,kic)); // +force(2,i,j,kic));
+    Unext(3,i,j,kic) = a_Up(3,i,j,kic) + irho*(Lutt(3,i,j,kic)+Ftt(3,i,j,kic));//+force(3,i,j,kic));
        }
    }
 
@@ -2965,10 +3209,10 @@ void EW::compute_preliminary_corrector( Sarray& a_Up, Sarray& a_U, Sarray& a_Um,
 // July 22: Changed time levels for (Up, U) to (U, Um)
 //      addsg4wind( &mDt, &mGridSize[g], Unext.c_ptr(), a_Up.c_ptr(), a_U.c_ptr(), mRho[g].c_ptr(),
 //FTNC      if( m_croutines )
-	 addsg4wind_ci( Unext.c_ptr(), a_U.c_ptr(), a_Um.c_ptr(), a_Rho.c_ptr(),
-			m_sg_dc_x[g], m_sg_dc_y[g], m_sg_dc_z[g], m_sg_str_x[g], m_sg_str_y[g], m_sg_str_z[g],
-			m_sg_corner_x[g], m_sg_corner_y[g], m_sg_corner_z[g],
-			ib, ie, jb, je, kb, ke, m_supergrid_damping_coefficient, Unext.m_kb, Unext.m_ke, kic, kic );
+    addsg4wind_ci( Unext.c_ptr(), a_U.c_ptr(), a_Um.c_ptr(), a_Rho.c_ptr(),
+         m_sg_dc_x[g], m_sg_dc_y[g], m_sg_dc_z[g], m_sg_str_x[g], m_sg_str_y[g], m_sg_str_z[g],
+         m_sg_corner_x[g], m_sg_corner_y[g], m_sg_corner_z[g],
+         ib, ie, jb, je, kb, ke, m_supergrid_damping_coefficient, Unext.m_kb, Unext.m_ke, kic, kic );
 //FTNC      else
 //FTNC	 addsg4wind( &mDt, &mGridSize[g], Unext.c_ptr(), a_U.c_ptr(), a_Um.c_ptr(), mRho[g].c_ptr(),
 //FTNC		     m_sg_dc_x[g], m_sg_dc_y[g], m_sg_dc_z[g], m_sg_str_x[g], m_sg_str_y[g], m_sg_str_z[g],
@@ -2981,7 +3225,7 @@ void EW::compute_preliminary_corrector( Sarray& a_Up, Sarray& a_U, Sarray& a_Um,
 
 //-----------------------------------------------------------------------
 void EW::compute_preliminary_predictor( Sarray& a_Up, Sarray& a_U, Sarray* a_AlphaVEp, Sarray& Unext,
-					int g, int kic, float_sw4 t, Sarray &F, 
+               int g, int kic, float_sw4 t, Sarray &F, 
                                         vector<GridPointSource*> point_sources, 
                                         Sarray& a_Rho, Sarray& a_Mu, Sarray& a_Lambda )
 {
@@ -3001,9 +3245,9 @@ void EW::compute_preliminary_predictor( Sarray& a_Up, Sarray& a_U, Sarray* a_Alp
 // Note: 6 first arguments of the function call:
 // (ib,ie), (jb,je), (kb,ke) is the declared size of mMu and mLambda in the (i,j,k)-directions, respectively
    rhs4th3wind( ib, ie, jb, je, kb, ke, nz, m_onesided[g], m_acof, // ghost point operators for elastic part
-		       m_bope, m_ghcof, Lu.c_ptr(), a_Up.c_ptr(), a_Mu.c_ptr(),
-		       a_Lambda.c_ptr(), mGridSize[g], m_sg_str_x[g], m_sg_str_y[g],
-		       m_sg_str_z[g], op, kb, ke, kic, kic ); 
+             m_bope, m_ghcof, Lu.c_ptr(), a_Up.c_ptr(), a_Mu.c_ptr(),
+             a_Lambda.c_ptr(), mGridSize[g], m_sg_str_x[g], m_sg_str_y[g],
+             m_sg_str_z[g], op, kb, ke, kic, kic ); 
 // Note: 4 last arguments of the above function call:
 // (kb,ke) is the declared size of Up in the k-direction
 // (kic,kic) is the declared size of Lu in the k-direction
@@ -3017,10 +3261,10 @@ void EW::compute_preliminary_predictor( Sarray& a_Up, Sarray& a_U, Sarray* a_Alp
          float_sw4* alpha_ptr = a_AlphaVEp[a].c_ptr();
          float_sw4* mua_ptr = mMuVE[g][a].c_ptr();
          float_sw4* lambdaa_ptr = mLambdaVE[g][a].c_ptr();
-	 rhs4th3wind( ib, ie, jb, je, kb, ke, nz, m_onesided[g], m_acof_no_gp, // NO ghost points for attenuation
-			     m_bope, m_ghcof_no_gp, Lu.c_ptr(), alpha_ptr, mua_ptr,
-			     lambdaa_ptr, mGridSize[g], m_sg_str_x[g], m_sg_str_y[g],
-			     m_sg_str_z[g], op, kb, ke, kic, kic );
+    rhs4th3wind( ib, ie, jb, je, kb, ke, nz, m_onesided[g], m_acof_no_gp, // NO ghost points for attenuation
+              m_bope, m_ghcof_no_gp, Lu.c_ptr(), alpha_ptr, mua_ptr,
+              lambdaa_ptr, mGridSize[g], m_sg_str_x[g], m_sg_str_y[g],
+              m_sg_str_z[g], op, kb, ke, kic, kic );
       }
    }
    
@@ -3098,20 +3342,20 @@ void EW::compute_preliminary_predictor( Sarray& a_Up, Sarray& a_U, Sarray* a_Alp
 #pragma omp simd
       for( int i=ib+2 ; i <= ie-2 ; i++ )
       {
-	 float_sw4 irho=cof/a_Rho(i,j,kic);
-	 Unext(1,i,j,kic) = 2*a_Up(1,i,j,kic) - a_U(1,i,j,kic) + irho*(Lu(1,i,j,kic)+F(1,i,j,kic)); //+f(1,i,j,kic));
-	 Unext(2,i,j,kic) = 2*a_Up(2,i,j,kic) - a_U(2,i,j,kic) + irho*(Lu(2,i,j,kic)+F(2,i,j,kic)); //+f(2,i,j,kic));
-	 Unext(3,i,j,kic) = 2*a_Up(3,i,j,kic) - a_U(3,i,j,kic) + irho*(Lu(3,i,j,kic)+F(3,i,j,kic)); //+f(3,i,j,kic));
+    float_sw4 irho=cof/a_Rho(i,j,kic);
+    Unext(1,i,j,kic) = 2*a_Up(1,i,j,kic) - a_U(1,i,j,kic) + irho*(Lu(1,i,j,kic)+F(1,i,j,kic)); //+f(1,i,j,kic));
+    Unext(2,i,j,kic) = 2*a_Up(2,i,j,kic) - a_U(2,i,j,kic) + irho*(Lu(2,i,j,kic)+F(2,i,j,kic)); //+f(2,i,j,kic));
+    Unext(3,i,j,kic) = 2*a_Up(3,i,j,kic) - a_U(3,i,j,kic) + irho*(Lu(3,i,j,kic)+F(3,i,j,kic)); //+f(3,i,j,kic));
       }
 // add in super-grid damping terms
    if (mOrder==2 && usingSupergrid()) // only needed for 2nd order time-stepping. Assume 4th order AD, Cartesian grid
    {
 // assign array pointers on the fly
 //FTNC      if( m_croutines )
-	 addsg4wind_ci( Unext.c_ptr(), a_Up.c_ptr(), a_U.c_ptr(), a_Rho.c_ptr(),
-			m_sg_dc_x[g], m_sg_dc_y[g], m_sg_dc_z[g], m_sg_str_x[g], m_sg_str_y[g], m_sg_str_z[g],
-			m_sg_corner_x[g], m_sg_corner_y[g], m_sg_corner_z[g],
-			ib, ie, jb, je, kb, ke, m_supergrid_damping_coefficient, Unext.m_kb, Unext.m_ke, kic, kic );
+    addsg4wind_ci( Unext.c_ptr(), a_Up.c_ptr(), a_U.c_ptr(), a_Rho.c_ptr(),
+         m_sg_dc_x[g], m_sg_dc_y[g], m_sg_dc_z[g], m_sg_str_x[g], m_sg_str_y[g], m_sg_str_z[g],
+         m_sg_corner_x[g], m_sg_corner_y[g], m_sg_corner_z[g],
+         ib, ie, jb, je, kb, ke, m_supergrid_damping_coefficient, Unext.m_kb, Unext.m_ke, kic, kic );
 //FTNC      else
 //FTNC	 addsg4wind( &mDt, &mGridSize[g], Unext.c_ptr(), a_Up.c_ptr(), a_U.c_ptr(), mRho[g].c_ptr(),
 //FTNC		     m_sg_dc_x[g], m_sg_dc_y[g], m_sg_dc_z[g], m_sg_str_x[g], m_sg_str_y[g], m_sg_str_z[g],
@@ -3123,7 +3367,7 @@ void EW::compute_preliminary_predictor( Sarray& a_Up, Sarray& a_U, Sarray* a_Alp
 
 //-----------------------------------------------------------------------
 void EW::compute_icstresses( Sarray& a_Up, Sarray& B, int g, int kic,
-			     float_sw4* a_str_x, float_sw4* a_str_y, float_sw4* sbop, 
+              float_sw4* a_str_x, float_sw4* a_str_y, float_sw4* sbop, 
                              char op )
 {
    const float_sw4 a1=2.0/3, a2=-1.0/12;
@@ -3148,26 +3392,26 @@ void EW::compute_icstresses( Sarray& a_Up, Sarray& B, int g, int kic,
 #pragma omp simd
       for( int i=B.m_ib+2 ; i <= B.m_ie-2 ; i++ )
       {
-	 float_sw4 uz, vz, wz;	 
-	 uz = vz = wz = 0;
-	 if( upper )
-	 {
-	    for( int m=0 ; m <= 5 ; m++ )
-	    {
-	       uz += sbop[m]*a_Up(1,i,j,k+m-1);
-	       vz += sbop[m]*a_Up(2,i,j,k+m-1);
-	       wz += sbop[m]*a_Up(3,i,j,k+m-1);
-	    }
-	 }
-	 else
-	 {
-	    for( int m=0 ; m <= 5 ; m++ )
-	    {
-	       uz -= sbop[m]*a_Up(1,i,j,k+1-m);
-	       vz -= sbop[m]*a_Up(2,i,j,k+1-m);
-	       wz -= sbop[m]*a_Up(3,i,j,k+1-m);
-	    }
-	 }
+    float_sw4 uz, vz, wz;	 
+    uz = vz = wz = 0;
+    if( upper )
+    {
+       for( int m=0 ; m <= 5 ; m++ )
+       {
+          uz += sbop[m]*a_Up(1,i,j,k+m-1);
+          vz += sbop[m]*a_Up(2,i,j,k+m-1);
+          wz += sbop[m]*a_Up(3,i,j,k+m-1);
+       }
+    }
+    else
+    {
+       for( int m=0 ; m <= 5 ; m++ )
+       {
+          uz -= sbop[m]*a_Up(1,i,j,k+1-m);
+          vz -= sbop[m]*a_Up(2,i,j,k+1-m);
+          wz -= sbop[m]*a_Up(3,i,j,k+1-m);
+       }
+    }
          B(1,i,j,k) += sgn*ih*mMu[g](i,j,k)*(
             str_x(i)*( a2*(a_Up(3,i+2,j,k)-a_Up(3,i-2,j,k))+
                        a1*(a_Up(3,i+1,j,k)-a_Up(3,i-1,j,k))) + (uz)  );
@@ -3212,26 +3456,26 @@ void EW::compute_icstresses2( Sarray& a_Up, Sarray& B, int kic, float_sw4 h,
 #pragma omp simd
       for( int i=B.m_ib+2 ; i <= B.m_ie-2 ; i++ )
       {
-	 float_sw4 uz, vz, wz;	 
-	 uz = vz = wz = 0;
-	 if( upper )
-	 {
-	    for( int m=0 ; m <= 5 ; m++ )
-	    {
-	       uz += sbop[m]*a_Up(1,i,j,k+m-1);
-	       vz += sbop[m]*a_Up(2,i,j,k+m-1);
-	       wz += sbop[m]*a_Up(3,i,j,k+m-1);
-	    }
-	 }
-	 else
-	 {
-	    for( int m=0 ; m <= 5 ; m++ )
-	    {
-	       uz -= sbop[m]*a_Up(1,i,j,k+1-m);
-	       vz -= sbop[m]*a_Up(2,i,j,k+1-m);
-	       wz -= sbop[m]*a_Up(3,i,j,k+1-m);
-	    }
-	 }
+    float_sw4 uz, vz, wz;	 
+    uz = vz = wz = 0;
+    if( upper )
+    {
+       for( int m=0 ; m <= 5 ; m++ )
+       {
+          uz += sbop[m]*a_Up(1,i,j,k+m-1);
+          vz += sbop[m]*a_Up(2,i,j,k+m-1);
+          wz += sbop[m]*a_Up(3,i,j,k+m-1);
+       }
+    }
+    else
+    {
+       for( int m=0 ; m <= 5 ; m++ )
+       {
+          uz -= sbop[m]*a_Up(1,i,j,k+1-m);
+          vz -= sbop[m]*a_Up(2,i,j,k+1-m);
+          wz -= sbop[m]*a_Up(3,i,j,k+1-m);
+       }
+    }
          B(1,i,j,k) += sgn*ih*a_mu(i,j,k)*(
             str_x(i)*( a2*(a_Up(3,i+2,j,k)-a_Up(3,i-2,j,k))+
                        a1*(a_Up(3,i+1,j,k)-a_Up(3,i-1,j,k))) + (uz)  );
@@ -3249,8 +3493,8 @@ void EW::compute_icstresses2( Sarray& a_Up, Sarray& B, int kic, float_sw4 h,
 
 //-----------------------------------------------------------------------
 void EW::compute_icstresses_curv( Sarray& a_Up, Sarray& B, int kic,
-				  Sarray& a_metric, Sarray& a_mu, Sarray& a_lambda,
-				  float_sw4* a_str_x, float_sw4* a_str_y, float_sw4* sbop, char op )
+              Sarray& a_metric, Sarray& a_mu, Sarray& a_lambda,
+              float_sw4* a_str_x, float_sw4* a_str_y, float_sw4* sbop, char op )
 {
    const float_sw4 a1=2.0/3, a2=-1.0/12;
    const bool upper = (kic == 1);
@@ -3276,8 +3520,8 @@ void EW::compute_icstresses_curv( Sarray& a_Up, Sarray& B, int kic,
 #pragma omp simd
       for( int i=B.m_ib+2 ; i <= B.m_ie-2 ; i++ )
       {
-	 float_sw4 uz, vz, wz;	 
-	 uz = vz = wz = 0;
+    float_sw4 uz, vz, wz;	 
+    uz = vz = wz = 0;
          for( int m=0 ; m <= 5 ; m++ )
          {
             uz += sbop[m]*a_Up(1,i,j,k+kl*(m-1));
@@ -3350,25 +3594,25 @@ void EW::add_ve_stresses( Sarray& a_Up, Sarray& B, int g, int kic, int a_mech, f
 #pragma omp simd
       for( int i=B.m_ib+2 ; i <= B.m_ie-2 ; i++ )
       {
-	 float_sw4 uz=0, vz=0, wz=0;
-	 if( upper )
-	 {
-	    for( int m=0 ; m <= 5 ; m++ )
-	    {
-	       uz += m_sbop_no_gp[m]*a_Up(1,i,j,k+m-1);
-	       vz += m_sbop_no_gp[m]*a_Up(2,i,j,k+m-1);
-	       wz += m_sbop_no_gp[m]*a_Up(3,i,j,k+m-1);
-	    }
-	 }
-	 else
-	 {
-	    for( int m=0 ; m <= 5 ; m++ )
-	    {
-	       uz -= m_sbop_no_gp[m]*a_Up(1,i,j,k+1-m);
-	       vz -= m_sbop_no_gp[m]*a_Up(2,i,j,k+1-m);
-	       wz -= m_sbop_no_gp[m]*a_Up(3,i,j,k+1-m);
-	    }
-	 }
+    float_sw4 uz=0, vz=0, wz=0;
+    if( upper )
+    {
+       for( int m=0 ; m <= 5 ; m++ )
+       {
+          uz += m_sbop_no_gp[m]*a_Up(1,i,j,k+m-1);
+          vz += m_sbop_no_gp[m]*a_Up(2,i,j,k+m-1);
+          wz += m_sbop_no_gp[m]*a_Up(3,i,j,k+m-1);
+       }
+    }
+    else
+    {
+       for( int m=0 ; m <= 5 ; m++ )
+       {
+          uz -= m_sbop_no_gp[m]*a_Up(1,i,j,k+1-m);
+          vz -= m_sbop_no_gp[m]*a_Up(2,i,j,k+1-m);
+          wz -= m_sbop_no_gp[m]*a_Up(3,i,j,k+1-m);
+       }
+    }
 // subtract the visco-elastic contribution from mechanism 'a_mech'
          B(1,i,j,k) = B(1,i,j,k) - ih*mMuVE[g][a_mech](i,j,k)*(
             str_x(i)*( a2*(a_Up(3,i+2,j,k)-a_Up(3,i-2,j,k))+
@@ -3387,7 +3631,7 @@ void EW::add_ve_stresses( Sarray& a_Up, Sarray& B, int g, int kic, int a_mech, f
 
 //------------------------------------------------------------------------------
 void EW::cartesian_bc_forcing(float_sw4 t, vector<float_sw4 **> & a_BCForcing,
-			      vector<Source*>& a_sources )
+               vector<Source*>& a_sources )
 // assign the boundary forcing arrays a_BCForcing[g][side]
 {
   int ifirst, ilast, jfirst, jlast, kfirst, klast, nz;
@@ -3442,123 +3686,123 @@ void EW::cartesian_bc_forcing(float_sw4 t, vector<float_sw4 **> & a_BCForcing,
       if (m_bcType[g][0] == bDirichlet || m_bcType[g][0] == bSuperGrid )
       {
          if( !curvilinear )
-	 {
+    {
 //FTNC	    if( m_croutines )
-	       twdirbdry_ci( &wind_ptr[0], h, t, om, cv, ph, bforce_side0_ptr, m_zmin[g] );
+          twdirbdry_ci( &wind_ptr[0], h, t, om, cv, ph, bforce_side0_ptr, m_zmin[g] );
 //FTNC	    else
 //FTNC	       twdirbdry( &wind_ptr[0], &h, &t, &om, &cv, &ph, bforce_side0_ptr, &m_zmin[g] );
-	 }
-	 else
-	 {
+    }
+    else
+    {
 //FTNC	    if( m_croutines )
-	       twdirbdryc_ci( ifirst, ilast, jfirst, jlast, kfirst, klast,
-			      &wind_ptr[0], t, om, cv, ph, bforce_side0_ptr,
-			      mX[g].c_ptr(), mY[g].c_ptr(), mZ[g].c_ptr() );
+          twdirbdryc_ci( ifirst, ilast, jfirst, jlast, kfirst, klast,
+               &wind_ptr[0], t, om, cv, ph, bforce_side0_ptr,
+               mX[g].c_ptr(), mY[g].c_ptr(), mZ[g].c_ptr() );
 //FTNC	    else
 //FTNC	       twdirbdryc( &ifirst, &ilast, &jfirst, &jlast, &kfirst, &klast,
 //FTNC                                             &wind_ptr[0], &t, &om, &cv, &ph, bforce_side0_ptr,
 //FTNC					     mX.c_ptr(), mY.c_ptr(), mZ.c_ptr() );
-	 }
+    }
       }
 
       if (m_bcType[g][1] == bDirichlet || m_bcType[g][1] == bSuperGrid )
       {
          if( !curvilinear )
-	 {
+    {
 //FTNC	    if( m_croutines )
-	       twdirbdry_ci( &wind_ptr[6], h, t, om, cv, ph, bforce_side1_ptr, m_zmin[g] );
+          twdirbdry_ci( &wind_ptr[6], h, t, om, cv, ph, bforce_side1_ptr, m_zmin[g] );
 //FTNC	    else
 //FTNC	       twdirbdry( &wind_ptr[6], &h, &t, &om, &cv, &ph, bforce_side1_ptr, &m_zmin[g] );
-	 }
-	 else
-	 {
+    }
+    else
+    {
 //FTNC	    if( m_croutines )
-	       twdirbdryc_ci( ifirst, ilast, jfirst, jlast, kfirst, klast,
-		       &wind_ptr[6], t, om, cv, ph, bforce_side1_ptr,
-		       mX[g].c_ptr(), mY[g].c_ptr(), mZ[g].c_ptr() );
+          twdirbdryc_ci( ifirst, ilast, jfirst, jlast, kfirst, klast,
+             &wind_ptr[6], t, om, cv, ph, bforce_side1_ptr,
+             mX[g].c_ptr(), mY[g].c_ptr(), mZ[g].c_ptr() );
 //FTNC	    else
 //FTNC	       twdirbdryc(&ifirst, &ilast, &jfirst, &jlast, &kfirst, &klast,
 //FTNC			  &wind_ptr[6], &t, &om, &cv, &ph, bforce_side1_ptr,
 //FTNC			  mX.c_ptr(), mY.c_ptr(), mZ.c_ptr() );
-	 }
+    }
       }
 
       if (m_bcType[g][2] == bDirichlet || m_bcType[g][2] == bSuperGrid)
       {
-	 if( !curvilinear )
-	 {
+    if( !curvilinear )
+    {
 //FTNC	    if( m_croutines )
-	       twdirbdry_ci( &wind_ptr[6*2], h, t, om, cv, ph, bforce_side2_ptr, m_zmin[g] );
+          twdirbdry_ci( &wind_ptr[6*2], h, t, om, cv, ph, bforce_side2_ptr, m_zmin[g] );
 //FTNC	    else
 //FTNC	       twdirbdry( &wind_ptr[6*2], &h, &t, &om, &cv, &ph, bforce_side2_ptr, &m_zmin[g] );
-	 }
+    }
          else
-	 {
+    {
 //FTNC	    if( m_croutines )
-	       twdirbdryc_ci( ifirst, ilast, jfirst, jlast, kfirst, klast,
-		       &wind_ptr[6*2], t, om, cv, ph, bforce_side2_ptr,
-		       mX[g].c_ptr(), mY[g].c_ptr(), mZ[g].c_ptr() );
+          twdirbdryc_ci( ifirst, ilast, jfirst, jlast, kfirst, klast,
+             &wind_ptr[6*2], t, om, cv, ph, bforce_side2_ptr,
+             mX[g].c_ptr(), mY[g].c_ptr(), mZ[g].c_ptr() );
 //FTNC	    else
 //FTNC	       twdirbdryc( &ifirst, &ilast, &jfirst, &jlast, &kfirst, &klast,
 //FTNC			   &wind_ptr[6*2], &t, &om, &cv, &ph, bforce_side2_ptr,
 //FTNC			   mX.c_ptr(), mY.c_ptr(), mZ.c_ptr() );
-	 }
+    }
       }
 
       if (m_bcType[g][3] == bDirichlet || m_bcType[g][3] == bSuperGrid)
       {
          if( !curvilinear )
-	 {
+    {
 //FTNC	    if( m_croutines )
-	       twdirbdry_ci( &wind_ptr[6*3], h, t, om, cv, ph, bforce_side3_ptr, m_zmin[g] );
+          twdirbdry_ci( &wind_ptr[6*3], h, t, om, cv, ph, bforce_side3_ptr, m_zmin[g] );
 //FTNC	    else
 //FTNC	       twdirbdry( &wind_ptr[6*3], &h, &t, &om, &cv, &ph, bforce_side3_ptr, &m_zmin[g] );
-	 }
+    }
          else
-	 {
+    {
 //FTNC	    if( m_croutines )
-	       twdirbdryc_ci( ifirst, ilast, jfirst, jlast, kfirst, klast,
-		       &wind_ptr[6*3], t, om, cv, ph, bforce_side3_ptr,
-		       mX[g].c_ptr(), mY[g].c_ptr(), mZ[g].c_ptr() );
+          twdirbdryc_ci( ifirst, ilast, jfirst, jlast, kfirst, klast,
+             &wind_ptr[6*3], t, om, cv, ph, bforce_side3_ptr,
+             mX[g].c_ptr(), mY[g].c_ptr(), mZ[g].c_ptr() );
 //FTNC	    else
 //FTNC	       twdirbdryc(&ifirst, &ilast, &jfirst, &jlast, &kfirst, &klast,
 //FTNC			  &wind_ptr[6*3], &t, &om, &cv, &ph, bforce_side3_ptr,
 //FTNC			  mX.c_ptr(), mY.c_ptr(), mZ.c_ptr() );
-	 }
+    }
       }
 
       if (m_bcType[g][4] == bDirichlet || m_bcType[g][4] == bSuperGrid)
       {
-	 if( !curvilinear )
-	 {
+    if( !curvilinear )
+    {
 //FTNC	    if( m_croutines )
-	       twdirbdry_ci( &wind_ptr[6*4], h, t, om, cv, ph, bforce_side4_ptr, m_zmin[g] );
+          twdirbdry_ci( &wind_ptr[6*4], h, t, om, cv, ph, bforce_side4_ptr, m_zmin[g] );
 //FTNC	    else
 //FTNC	       twdirbdry( &wind_ptr[6*4], &h, &t, &om, &cv, &ph, bforce_side4_ptr, &m_zmin[g] );
-	 }
+    }
          else
-	 {
+    {
 //FTNC	    if( m_croutines )
-	       twdirbdryc_ci( ifirst, ilast, jfirst, jlast, kfirst, klast,
-		       &wind_ptr[6*4], t, om, cv, ph, bforce_side4_ptr,
-		       mX[g].c_ptr(), mY[g].c_ptr(), mZ[g].c_ptr() );
+          twdirbdryc_ci( ifirst, ilast, jfirst, jlast, kfirst, klast,
+             &wind_ptr[6*4], t, om, cv, ph, bforce_side4_ptr,
+             mX[g].c_ptr(), mY[g].c_ptr(), mZ[g].c_ptr() );
 //FTNC	    else
 //FTNC	       twdirbdryc( &ifirst, &ilast, &jfirst, &jlast, &kfirst, &klast,
 //FTNC			   &wind_ptr[6*4], &t, &om, &cv, &ph, bforce_side4_ptr,
 //FTNC			   mX.c_ptr(), mY.c_ptr(), mZ.c_ptr() );
-	 }
+    }
       }
       else if (m_bcType[g][4] == bStressFree)
       {
-	 k = 1;
+    k = 1;
          if( m_anisotropic )
          {
 // curvilinear anisotropic case is not yet implemented
             CHECK_INPUT (!curvilinear, "cartesian_bc_forcing> bStressFree not implemented for anisotropic materials and curvilinear grids" <<endl);
 
 //FTNC	    if( m_croutines )
-	       tw_aniso_free_surf_z_ci( ifirst, ilast, jfirst, jlast, kfirst, klast, k, t, om,
-					cv, ph, omm, phc, bforce_side4_ptr, h, m_zmin[g] );            
+          tw_aniso_free_surf_z_ci( ifirst, ilast, jfirst, jlast, kfirst, klast, k, t, om,
+               cv, ph, omm, phc, bforce_side4_ptr, h, m_zmin[g] );            
 //FTNC	    else
 //FTNC	       tw_aniso_free_surf_z( ifirst, ilast, jfirst, jlast, kfirst, klast, k, t, om,
 //FTNC				     cv, ph, omm, phc, bforce_side4_ptr, h, m_zmin[g] );            
@@ -3571,9 +3815,9 @@ void EW::cartesian_bc_forcing(float_sw4 t, vector<float_sw4 **> & a_BCForcing,
                float_sw4 omstrx = m_supergrid_taper_x[g].get_tw_omega();
                float_sw4 omstry = m_supergrid_taper_y[g].get_tw_omega();
 //FTNC	       if( m_croutines )
-		  twfrsurfzsgstr_ci( ifirst, ilast, jfirst, jlast, kfirst, 
-				  klast, h, k, t, om, cv, ph, omstrx, omstry,
-				  bforce_side4_ptr, mu_ptr, la_ptr, m_zmin[g] );
+        twfrsurfzsgstr_ci( ifirst, ilast, jfirst, jlast, kfirst, 
+              klast, h, k, t, om, cv, ph, omstrx, omstry,
+              bforce_side4_ptr, mu_ptr, la_ptr, m_zmin[g] );
 //FTNC	       else
 //FTNC		  twfrsurfzsgstr( &ifirst, &ilast, &jfirst, &jlast, &kfirst, 
 //FTNC				  &klast, &h, &k, &t, &om, &cv, &ph, &omstrx, &omstry,
@@ -3583,9 +3827,9 @@ void EW::cartesian_bc_forcing(float_sw4 t, vector<float_sw4 **> & a_BCForcing,
                   float_sw4* mua_ptr    = mMuVE[g][0].c_ptr();
                   float_sw4* laa_ptr    = mLambdaVE[g][0].c_ptr();
 //FTNC		  if( m_croutines )
-		     twfrsurfzsgstratt_ci( ifirst, ilast, jfirst, jlast, kfirst, 
-					   klast, h, k, t, om, cv, ph, omstrx, omstry,
-					   bforce_side4_ptr, mua_ptr, laa_ptr, m_zmin[g] );
+           twfrsurfzsgstratt_ci( ifirst, ilast, jfirst, jlast, kfirst, 
+                  klast, h, k, t, om, cv, ph, omstrx, omstry,
+                  bforce_side4_ptr, mua_ptr, laa_ptr, m_zmin[g] );
 //FTNC		  else
 //FTNC		     twfrsurfzsgstratt( &ifirst, &ilast, &jfirst, &jlast, &kfirst, 
 //FTNC					&klast, &h, &k, &t, &om, &cv, &ph, &omstrx, &omstry,
@@ -3598,9 +3842,9 @@ void EW::cartesian_bc_forcing(float_sw4 t, vector<float_sw4 **> & a_BCForcing,
                Sarray tau(6,ifirst,ilast,jfirst,jlast,1,1);
                // Get twilight stress tensor, tau.
 //FTNC	       if( m_croutines )
-		  twstensor_ci( ifirst, ilast, jfirst, jlast, kfirst, klast,
-				k, t, om, cv, ph,
-				mX[g].c_ptr(), mY[g].c_ptr(), mZ[g].c_ptr(), tau.c_ptr(), mu_ptr, la_ptr );
+        twstensor_ci( ifirst, ilast, jfirst, jlast, kfirst, klast,
+            k, t, om, cv, ph,
+            mX[g].c_ptr(), mY[g].c_ptr(), mZ[g].c_ptr(), tau.c_ptr(), mu_ptr, la_ptr );
 //FTNC	       else
 //FTNC		  twstensor( &ifirst, &ilast, &jfirst, &jlast, &kfirst, &klast,
 //FTNC			     &k, &t, &om, &cv, &ph,
@@ -3608,9 +3852,9 @@ void EW::cartesian_bc_forcing(float_sw4 t, vector<float_sw4 **> & a_BCForcing,
                // Compute boundary forcing for given stress tensor, tau.
 
 //FTNC	       if( m_croutines )
-		  getsurfforcing_ci( ifirst, ilast, jfirst, jlast, kfirst,
-				     klast, k, mMetric[g].c_ptr(), mJ[g].c_ptr(),
-				     tau.c_ptr(), bforce_side4_ptr );
+        getsurfforcing_ci( ifirst, ilast, jfirst, jlast, kfirst,
+                 klast, k, mMetric[g].c_ptr(), mJ[g].c_ptr(),
+                 tau.c_ptr(), bforce_side4_ptr );
 //FTNC	       else
 //FTNC		  getsurfforcing( &ifirst, &ilast, &jfirst, &jlast, &kfirst,
 //FTNC				  &klast, &k, mMetric.c_ptr(), mJ.c_ptr(),
@@ -3621,16 +3865,16 @@ void EW::cartesian_bc_forcing(float_sw4 t, vector<float_sw4 **> & a_BCForcing,
                   float_sw4* mua_ptr    = mMuVE[g][0].c_ptr();
                   float_sw4* laa_ptr    = mLambdaVE[g][0].c_ptr();
 //FTNC		  if( m_croutines )
-		     twstensoratt_ci( ifirst, ilast, jfirst, jlast, kfirst, klast,
-				      k, t, om, cv, ph,
-				      mX[g].c_ptr(), mY[g].c_ptr(), mZ[g].c_ptr(), tau.c_ptr(), mua_ptr, laa_ptr );
+           twstensoratt_ci( ifirst, ilast, jfirst, jlast, kfirst, klast,
+                  k, t, om, cv, ph,
+                  mX[g].c_ptr(), mY[g].c_ptr(), mZ[g].c_ptr(), tau.c_ptr(), mua_ptr, laa_ptr );
 //FTNC		  else
 //FTNC		     twstensoratt( &ifirst, &ilast, &jfirst, &jlast, &kfirst, &klast,
 //FTNC				   &k, &t, &om, &cv, &ph,
 //FTNC				   mX.c_ptr(), mY.c_ptr(), mZ.c_ptr(), tau.c_ptr(), mua_ptr, laa_ptr );
 //FTNC		  if( m_croutines )
-		     subsurfforcing_ci( ifirst, ilast, jfirst, jlast, kfirst, klast, k,
-					mMetric[g].c_ptr(), mJ[g].c_ptr(), tau.c_ptr(), bforce_side4_ptr );
+           subsurfforcing_ci( ifirst, ilast, jfirst, jlast, kfirst, klast, k,
+               mMetric[g].c_ptr(), mJ[g].c_ptr(), tau.c_ptr(), bforce_side4_ptr );
 //FTNC		  else
 //FTNC		     subsurfforcing( &ifirst, &ilast, &jfirst, &jlast, &kfirst,
 //FTNC				     &klast, &k, mMetric.c_ptr(), mJ.c_ptr(),
@@ -3640,9 +3884,9 @@ void EW::cartesian_bc_forcing(float_sw4 t, vector<float_sw4 **> & a_BCForcing,
             else if( !usingSupergrid() && !curvilinear )
             {
 //FTNC	       if( m_croutines )
-		  twfrsurfz_ci( ifirst, ilast, jfirst, jlast, kfirst, 
-				klast, h, k, t, om, cv, ph,
-				bforce_side4_ptr, mu_ptr, la_ptr, m_zmin[g] );
+        twfrsurfz_ci( ifirst, ilast, jfirst, jlast, kfirst, 
+            klast, h, k, t, om, cv, ph,
+            bforce_side4_ptr, mu_ptr, la_ptr, m_zmin[g] );
 //FTNC	       else
 //FTNC		  twfrsurfz( &ifirst, &ilast, &jfirst, &jlast, &kfirst, 
 //FTNC			     &klast, &h, &k, &t, &om, &cv, &ph,
@@ -3652,14 +3896,14 @@ void EW::cartesian_bc_forcing(float_sw4 t, vector<float_sw4 **> & a_BCForcing,
                   float_sw4* mua_ptr    = mMuVE[g][0].c_ptr();
                   float_sw4* laa_ptr    = mLambdaVE[g][0].c_ptr();
 //FTNC		  if( m_croutines )
-		     twfrsurfzatt_ci( ifirst, ilast, jfirst, jlast, kfirst, 
-				      klast, h, k, t, om, cv, ph,
-				      bforce_side4_ptr, mua_ptr, laa_ptr, m_zmin[g] );
+           twfrsurfzatt_ci( ifirst, ilast, jfirst, jlast, kfirst, 
+                  klast, h, k, t, om, cv, ph,
+                  bforce_side4_ptr, mua_ptr, laa_ptr, m_zmin[g] );
 //FTNC		  else
 //FTNC		     twfrsurfzatt( &ifirst, &ilast, &jfirst, &jlast, &kfirst, 
 //FTNC				   &klast, &h, &k, &t, &om, &cv, &ph,
 //FTNC				   bforce_side4_ptr, mua_ptr, laa_ptr, &m_zmin[g] );
-	       
+          
                }
             }
             else if( usingSupergrid() && curvilinear )
@@ -3671,10 +3915,10 @@ void EW::cartesian_bc_forcing(float_sw4 t, vector<float_sw4 **> & a_BCForcing,
                Sarray tau(6,ifirst,ilast,jfirst,jlast,1,1);
                // Get twilight stress tensor, tau.
 //FTNC	       if( m_croutines )
-		  twstensorsg_ci( ifirst, ilast, jfirst, jlast, kfirst, klast,
-				  k, t, om, cv, ph,
-				  mX[g].c_ptr(), mY[g].c_ptr(), mZ[g].c_ptr(), tau.c_ptr(),
-				  mu_ptr, la_ptr, omstrx, omstry );
+        twstensorsg_ci( ifirst, ilast, jfirst, jlast, kfirst, klast,
+              k, t, om, cv, ph,
+              mX[g].c_ptr(), mY[g].c_ptr(), mZ[g].c_ptr(), tau.c_ptr(),
+              mu_ptr, la_ptr, omstrx, omstry );
 //FTNC	       else
 //FTNC		  twstensorsg( &ifirst, &ilast, &jfirst, &jlast, &kfirst, &klast,
 //FTNC			       &k, &t, &om, &cv, &ph,
@@ -3682,9 +3926,9 @@ void EW::cartesian_bc_forcing(float_sw4 t, vector<float_sw4 **> & a_BCForcing,
 //FTNC			       mu_ptr, la_ptr, &omstrx, &omstry );
                // Compute boundary forcing for given stress tensor, tau.
 //FTNC	       if( m_croutines )
-		  getsurfforcingsg_ci( ifirst, ilast, jfirst, jlast, kfirst,
-				       klast, k, mMetric[g].c_ptr(), mJ[g].c_ptr(),
-				       tau.c_ptr(), m_sg_str_x[g], m_sg_str_y[g], bforce_side4_ptr );
+        getsurfforcingsg_ci( ifirst, ilast, jfirst, jlast, kfirst,
+                   klast, k, mMetric[g].c_ptr(), mJ[g].c_ptr(),
+                   tau.c_ptr(), m_sg_str_x[g], m_sg_str_y[g], bforce_side4_ptr );
 //FTNC	       else
 //FTNC		  getsurfforcingsg( &ifirst, &ilast, &jfirst, &jlast, &kfirst,
 //FTNC				    &klast, &k, mMetric.c_ptr(), mJ.c_ptr(),
@@ -3695,16 +3939,16 @@ void EW::cartesian_bc_forcing(float_sw4 t, vector<float_sw4 **> & a_BCForcing,
                   float_sw4* mua_ptr    = mMuVE[g][0].c_ptr();
                   float_sw4* laa_ptr    = mLambdaVE[g][0].c_ptr();
 //FTNC		  if( m_croutines )
-		  {
-		     twstensorsgatt_ci( ifirst, ilast, jfirst, jlast, kfirst, klast,
-					k, t, om, cv, ph,
-					mX[g].c_ptr(), mY[g].c_ptr(), mZ[g].c_ptr(), tau.c_ptr(),
-					mua_ptr, laa_ptr, omstrx, omstry );
-		     subsurfforcingsg_ci( ifirst, ilast, jfirst, jlast, kfirst,
-					  klast, k, mMetric[g].c_ptr(), mJ[g].c_ptr(),
-					  tau.c_ptr(), m_sg_str_x[g], m_sg_str_y[g],
-					  bforce_side4_ptr );
-		  }
+        {
+           twstensorsgatt_ci( ifirst, ilast, jfirst, jlast, kfirst, klast,
+               k, t, om, cv, ph,
+               mX[g].c_ptr(), mY[g].c_ptr(), mZ[g].c_ptr(), tau.c_ptr(),
+               mua_ptr, laa_ptr, omstrx, omstry );
+           subsurfforcingsg_ci( ifirst, ilast, jfirst, jlast, kfirst,
+                 klast, k, mMetric[g].c_ptr(), mJ[g].c_ptr(),
+                 tau.c_ptr(), m_sg_str_x[g], m_sg_str_y[g],
+                 bforce_side4_ptr );
+        }
 //FTNC		  else
 //FTNC		  {
 //FTNC		     twstensorsgatt( &ifirst, &ilast, &jfirst, &jlast, &kfirst, &klast,
@@ -3725,36 +3969,36 @@ void EW::cartesian_bc_forcing(float_sw4 t, vector<float_sw4 **> & a_BCForcing,
 
       if (m_bcType[g][5] == bDirichlet || m_bcType[g][5] == bSuperGrid)
       {
-	 if( !curvilinear )
-	 {
+    if( !curvilinear )
+    {
 //FTNC	    if( m_croutines )
-	       twdirbdry_ci( &wind_ptr[6*5], h, t, om, cv, ph, bforce_side5_ptr, m_zmin[g] );
+          twdirbdry_ci( &wind_ptr[6*5], h, t, om, cv, ph, bforce_side5_ptr, m_zmin[g] );
 //FTNC	    else
 //FTNC	       twdirbdry( &wind_ptr[6*5], &h, &t, &om, &cv, &ph, bforce_side5_ptr, &m_zmin[g] );
-	 }
-	 else
-	 {
+    }
+    else
+    {
 //FTNC	    if( m_croutines )
-	       twdirbdryc_ci( ifirst, ilast, jfirst, jlast, kfirst, klast,
-		       &wind_ptr[6*5], t, om, cv, ph, bforce_side5_ptr,
-		       mX[g].c_ptr(), mY[g].c_ptr(), mZ[g].c_ptr() );
+          twdirbdryc_ci( ifirst, ilast, jfirst, jlast, kfirst, klast,
+             &wind_ptr[6*5], t, om, cv, ph, bforce_side5_ptr,
+             mX[g].c_ptr(), mY[g].c_ptr(), mZ[g].c_ptr() );
 //FTNC	    else
 //FTNC	       twdirbdryc( &ifirst, &ilast, &jfirst, &jlast, &kfirst, &klast,
 //FTNC			   &wind_ptr[6*5], &t, &om, &cv, &ph, bforce_side5_ptr,
 //FTNC			   mX.c_ptr(), mY.c_ptr(), mZ.c_ptr() );
-	 }
+    }
       }
       else if (m_bcType[g][5] == bStressFree)
       {
-	 k = nz;
+    k = nz;
          if( m_anisotropic )
          {
 // curvilinear anisotropic case is not yet implemented
             CHECK_INPUT (!curvilinear, "cartesian_bc_forcing> bStressFree not implemented for anisotropic materials and curvilinear grids" <<endl);
 
 //FTNC	    if( m_croutines )
-	       tw_aniso_free_surf_z_ci( ifirst, ilast, jfirst, jlast, kfirst, klast, k, t, om,
-					cv, ph, omm, phc, bforce_side5_ptr, h, m_zmin[g] );
+          tw_aniso_free_surf_z_ci( ifirst, ilast, jfirst, jlast, kfirst, klast, k, t, om,
+               cv, ph, omm, phc, bforce_side5_ptr, h, m_zmin[g] );
 //FTNC	    else
 //FTNC	       tw_aniso_free_surf_z( ifirst, ilast, jfirst, jlast, kfirst, klast, k, t, om,
 //FTNC				     cv, ph, omm, phc, bforce_side5_ptr, h, m_zmin[g] );            
@@ -3767,45 +4011,45 @@ void EW::cartesian_bc_forcing(float_sw4 t, vector<float_sw4 **> & a_BCForcing,
                float_sw4 omstrx = m_supergrid_taper_x[g].get_tw_omega();
                float_sw4 omstry = m_supergrid_taper_y[g].get_tw_omega();
                twfrsurfzsgstr_ci( ifirst, ilast, jfirst, jlast, kfirst, 
-			       klast, h, k, t, om, cv, ph, omstrx, omstry,
-			       bforce_side5_ptr, mu_ptr, la_ptr, m_zmin[g] );
+                klast, h, k, t, om, cv, ph, omstrx, omstry,
+                bforce_side5_ptr, mu_ptr, la_ptr, m_zmin[g] );
                if( m_use_attenuation )
                {
                   float_sw4* mua_ptr    = mMuVE[g][0].c_ptr();
                   float_sw4* laa_ptr    = mLambdaVE[g][0].c_ptr();
                   twfrsurfzsgstratt_ci( ifirst, ilast, jfirst, jlast, kfirst, 
-				     klast, h, k, t, om, cv, ph, omstrx, omstry,
-				     bforce_side5_ptr, mua_ptr, laa_ptr, m_zmin[g] );
-	       
+                 klast, h, k, t, om, cv, ph, omstrx, omstry,
+                 bforce_side5_ptr, mua_ptr, laa_ptr, m_zmin[g] );
+          
                }
             }
             else
             {
-	       if( curvilinear )
-	       {
+          if( curvilinear )
+          {
                   Sarray tau(6,ifirst,ilast,jfirst,jlast,1,1);
-		  twstensor_ci( ifirst, ilast, jfirst, jlast, kfirst, klast,
-				k, t, om, cv, ph,
-				mX[g].c_ptr(), mY[g].c_ptr(), mZ[g].c_ptr(), tau.c_ptr(), mu_ptr, la_ptr );
+        twstensor_ci( ifirst, ilast, jfirst, jlast, kfirst, klast,
+            k, t, om, cv, ph,
+            mX[g].c_ptr(), mY[g].c_ptr(), mZ[g].c_ptr(), tau.c_ptr(), mu_ptr, la_ptr );
                // Compute boundary forcing for given stress tensor, tau.
-		  getsurfforcing_ci( ifirst, ilast, jfirst, jlast, kfirst,
-				     klast, k, mMetric[g].c_ptr(), mJ[g].c_ptr(),
-				     tau.c_ptr(), bforce_side5_ptr );
-	       }
-	       else
-	       {
+        getsurfforcing_ci( ifirst, ilast, jfirst, jlast, kfirst,
+                 klast, k, mMetric[g].c_ptr(), mJ[g].c_ptr(),
+                 tau.c_ptr(), bforce_side5_ptr );
+          }
+          else
+          {
                   twfrsurfz_ci( ifirst, ilast, jfirst, jlast, kfirst, 
-		   	        klast, h, k, t, om, cv, ph,
-			        bforce_side5_ptr, mu_ptr, la_ptr, m_zmin[g] );
+                    klast, h, k, t, om, cv, ph,
+                 bforce_side5_ptr, mu_ptr, la_ptr, m_zmin[g] );
                   if( m_use_attenuation )
                   {
                      float_sw4* mua_ptr    = mMuVE[g][0].c_ptr();
                      float_sw4* laa_ptr    = mLambdaVE[g][0].c_ptr();
                      twfrsurfzatt_ci( ifirst, ilast, jfirst, jlast, kfirst, 
-				klast, h, k, t, om, cv, ph,
-				bforce_side5_ptr, mua_ptr, laa_ptr, m_zmin[g] );
+            klast, h, k, t, om, cv, ph,
+            bforce_side5_ptr, mua_ptr, laa_ptr, m_zmin[g] );
                   }
-	       }
+          }
             } // end ! supergrid
             
          }// end isotropic case
@@ -3827,13 +4071,13 @@ void EW::cartesian_bc_forcing(float_sw4 t, vector<float_sw4 **> & a_BCForcing,
 
 // homogneous free surface bc (low-z)
       for (q=0; q<3*m_NumberOfBCPoints[g][4]; q++)
-	bforce_side4_ptr[q] = 0.;
+   bforce_side4_ptr[q] = 0.;
 
 // assign exact solution on bottom (high-z)
       if (m_bcType[g][5] == bDirichlet)
       {
-	raydirbdry( bforce_side5_ptr, &wind_ptr[6*5], &t, &lambda, &mu, &rho, &cr, 
-		    &omega, &alpha, &h, &zmin );
+   raydirbdry( bforce_side5_ptr, &wind_ptr[6*5], &t, &lambda, &mu, &rho, &cr, 
+          &omega, &alpha, &h, &zmin );
       }
 
      //  subroutine RAYDIRBDRY( bforce, wind, t, lambda, mu, rho, cr, 
@@ -3842,11 +4086,11 @@ void EW::cartesian_bc_forcing(float_sw4 t, vector<float_sw4 **> & a_BCForcing,
     else if( m_point_source_test )
     {
        for( int side=0 ; side < 6 ; side++ )
-	  if( m_bcType[g][side] == bDirichlet )
-	     get_exact_point_source( a_BCForcing[g][side], t, g, *a_sources[0], &wind_ptr[6*side] );
-	  else
-	     for (int q=0; q<3*m_NumberOfBCPoints[g][side]; q++)
-		a_BCForcing[g][side][q] = 0.;
+     if( m_bcType[g][side] == bDirichlet )
+        get_exact_point_source( a_BCForcing[g][side], t, g, *a_sources[0], &wind_ptr[6*side] );
+     else
+        for (int q=0; q<3*m_NumberOfBCPoints[g][side]; q++)
+      a_BCForcing[g][side][q] = 0.;
 
     }
     else
@@ -3855,17 +4099,17 @@ void EW::cartesian_bc_forcing(float_sw4 t, vector<float_sw4 **> & a_BCForcing,
 // we can do the same loop for all types of bc. For bParallel boundaries, numberOfBCPoints=0
       int q;
       for (q=0; q<3*m_NumberOfBCPoints[g][0]; q++)
-	bforce_side0_ptr[q] = 0.;
+   bforce_side0_ptr[q] = 0.;
       for (q=0; q<3*m_NumberOfBCPoints[g][1]; q++)
-	bforce_side1_ptr[q] = 0.;
+   bforce_side1_ptr[q] = 0.;
       for (q=0; q<3*m_NumberOfBCPoints[g][2]; q++)
-	bforce_side2_ptr[q] = 0.;
+   bforce_side2_ptr[q] = 0.;
       for (q=0; q<3*m_NumberOfBCPoints[g][3]; q++)
-	bforce_side3_ptr[q] = 0.;
+   bforce_side3_ptr[q] = 0.;
       for (q=0; q<3*m_NumberOfBCPoints[g][4]; q++)
-	bforce_side4_ptr[q] = 0.;
+   bforce_side4_ptr[q] = 0.;
       for (q=0; q<3*m_NumberOfBCPoints[g][5]; q++)
-	bforce_side5_ptr[q] = 0.;
+   bforce_side5_ptr[q] = 0.;
     }
   }
 }
@@ -3985,7 +4229,7 @@ void EW::cartesian_bc_forcing(float_sw4 t, vector<float_sw4 **> & a_BCForcing,
 // 		     +E32(i,j,J,s,1,s,2,mu)*Dsp[0]
 // 		     +E32(i,j,J,s,3,s,2,mu)*Dsp[2]
 // 		     +E32(i,j,J,s,3,s,3,mu)*Dsp[1]));
-	    
+       
 // 	b[2]=-(E1(i,j,J,s,1,q,1,mu)*Dq0[2]
 // 	       +E1(i,j,J,s,1,r,1,mu)*Dr0[2]	
 // 	       +E1(i,j,J,s,1,q,3,mu)*Dq0[0]
@@ -4038,7 +4282,7 @@ void EW::cartesian_bc_forcing(float_sw4 t, vector<float_sw4 **> & a_BCForcing,
 
 // 	for (int c=1; c<=3; c++)
 // 	  x[c-1] = u(i,j,2,c) - u(i,j,1,c);
-	    
+       
 // 	Ax[0] = A[0]*x[0] + A[3]*x[1] + A[6]*x[2];
 // 	Ax[1] = A[1]*x[0] + A[4]*x[1] + A[7]*x[2];
 // 	Ax[2] = A[2]*x[0] + A[5]*x[1] + A[8]*x[2];
@@ -4049,7 +4293,7 @@ void EW::cartesian_bc_forcing(float_sw4 t, vector<float_sw4 **> & a_BCForcing,
 // 	  bcForcing[side][ind+c-1] += Ax[c-1] - b[c-1];
 // 	}
 // 	ind += 3;
-	    
+       
 //       }
     
 //   }
@@ -4071,8 +4315,8 @@ void EW::cartesian_bc_forcing(float_sw4 t, vector<float_sw4 **> & a_BCForcing,
 
 //-----------------------------------------------------------------------
 void EW::test_sources( vector<GridPointSource*>& a_point_sources,
-		       vector<Source*>& a_global_unique_sources, vector<Sarray>& a_F,
-		       vector<int>& identsources )
+             vector<Source*>& a_global_unique_sources, vector<Sarray>& a_F,
+             vector<int>& identsources )
 {
 // Check the source discretization
   int kx[3] = {0,0,0};
@@ -4158,9 +4402,9 @@ void EW::test_sources( vector<GridPointSource*>& a_point_sources,
 
 //-----------------------------------------------------------------------
 void EW::testSourceDiscretization( int kx[3], int ky[3], int kz[3],
-				   float_sw4 moments[3],
-				   vector<GridPointSource*>& point_sources,
-				   vector<Sarray>& F, vector<int>& identsources )
+               float_sw4 moments[3],
+               vector<GridPointSource*>& point_sources,
+               vector<Sarray>& F, vector<int>& identsources )
 {
    // Evaluate sources at a large time (assume that the time function is=1 at t=infinity)
    // Compute moments, integrals of the source times polynomials of degree (kx,ky,kz).
@@ -4185,11 +4429,11 @@ void EW::testSourceDiscretization( int kx[3], int ky[3], int kz[3],
      float_sw4 f1=0, f2=0, f3=0;
      for( int s = identsources[r] ; s < identsources[r+1] ; s++ )
      {
-	float_sw4 fxyz[3];
-	point_sources[s]->getFxyz_notime(fxyz);
-	f1 += fxyz[0];
-	f2 += fxyz[1];
-	f3 += fxyz[2];
+   float_sw4 fxyz[3];
+   point_sources[s]->getFxyz_notime(fxyz);
+   f1 += fxyz[0];
+   f2 += fxyz[1];
+   f3 += fxyz[2];
      }
      F[g](1,i,j,k) += f1;
      F[g](2,i,j,k) += f2;
@@ -4232,7 +4476,7 @@ void EW::testSourceDiscretization( int kx[3], int ky[3], int kz[3],
     int nz  = m_global_nz[g];
     if( g <= mNumberOfCartesianGrids-1 )
        testsrc_ci( f_ptr, ifirst, ilast, jfirst, jlast, kfirst, klast,
-		   nz, wind, m_zmin[g], h, kx, ky, kz, momgrid );
+         nz, wind, m_zmin[g], h, kx, ky, kz, momgrid );
     else
        testsrcc_ci( f_ptr, ifirst, ilast, jfirst, jlast, kfirst, klast,
                     nz, g, wind, kx, ky, kz, momgrid );
@@ -4244,7 +4488,7 @@ void EW::testSourceDiscretization( int kx[3], int ky[3], int kz[3],
 
 //-----------------------------------------------------------------------
 void EW::extractRecordData(TimeSeries::receiverMode mode, int i0, int j0, int k0, int g0, 
-			   vector<float_sw4> &uRec, vector<Sarray> &Um2, vector<Sarray> &U)
+            vector<float_sw4> &uRec, vector<Sarray> &Um2, vector<Sarray> &U)
 {
   if (mode == TimeSeries::Displacement)
   {
@@ -4268,18 +4512,18 @@ void EW::extractRecordData(TimeSeries::receiverMode mode, int i0, int j0, int k0
 //      int i=m_i0, j=m_j0, k=m_k0, g=m_grid0;
       float_sw4 factor = 1.0/(2*mGridSize[g0]);
       uRec[0] = ((U[g0](1,i0+1, j0, k0) - U[g0](1,i0-1, j0, k0)+
-		  U[g0](2,i0, j0+1, k0) - U[g0](2,i0, j0-1, k0)+
-		  U[g0](3,i0, j0, k0+1) - U[g0](3,i0, j0, k0-1))*factor);
+        U[g0](2,i0, j0+1, k0) - U[g0](2,i0, j0-1, k0)+
+        U[g0](3,i0, j0, k0+1) - U[g0](3,i0, j0, k0-1))*factor);
     }
     else // must be curvilinear
     {
 //      int i=m_i0, j=m_j0, k=m_k0, g=m_grid0;
        float_sw4 factor = 0.5/sqrt(mJ[g0](i0,j0,k0));
        uRec[0] = ( ( mMetric[g0](1,i0,j0,k0)*(U[g0](1,i0+1,j0,k0) - U[g0](1,i0-1,j0,k0))+
-		     mMetric[g0](1,i0,j0,k0)*(U[g0](2,i0,j0+1,k0) - U[g0](2,i0,j0-1,k0))+
-		     mMetric[g0](2,i0,j0,k0)*(U[g0](1,i0,j0,k0+1) - U[g0](1,i0,j0,k0-1))+
-		     mMetric[g0](3,i0,j0,k0)*(U[g0](2,i0,j0,k0+1) - U[g0](2,i0,j0,k0-1))+
-		     mMetric[g0](4,i0,j0,k0)*(U[g0](3,i0,j0,k0+1) - U[g0](3,i0,j0,k0-1))  )*factor);
+           mMetric[g0](1,i0,j0,k0)*(U[g0](2,i0,j0+1,k0) - U[g0](2,i0,j0-1,k0))+
+           mMetric[g0](2,i0,j0,k0)*(U[g0](1,i0,j0,k0+1) - U[g0](1,i0,j0,k0-1))+
+           mMetric[g0](3,i0,j0,k0)*(U[g0](2,i0,j0,k0+1) - U[g0](2,i0,j0,k0-1))+
+           mMetric[g0](4,i0,j0,k0)*(U[g0](3,i0,j0,k0+1) - U[g0](3,i0,j0,k0-1))  )*factor);
     }
   } // end div
   else if(mode == TimeSeries::Curl)
@@ -4388,9 +4632,9 @@ void EW::extractRecordData(TimeSeries::receiverMode mode, int i0, int j0, int k0
       float_sw4 duydx = (mMetric[g0](1,i0,j0,k0)*duydq+mMetric[g0](2,i0,j0,k0)*duyds)*factor;
       float_sw4 duxdy = (mMetric[g0](1,i0,j0,k0)*duxdr+mMetric[g0](3,i0,j0,k0)*duxds)*factor;
       float_sw4 duxdx = ( mMetric[g0](1,i0,j0,k0)*(U[g0](1,i0+1,j0,k0) - U[g0](1,i0-1,j0,k0))+
-		       mMetric[g0](2,i0,j0,k0)*(U[g0](1,i0,j0,k0+1) - U[g0](1,i0,j0,k0-1)) )*factor;
+             mMetric[g0](2,i0,j0,k0)*(U[g0](1,i0,j0,k0+1) - U[g0](1,i0,j0,k0-1)) )*factor;
       float_sw4 duydy = ( mMetric[g0](1,i0,j0,k0)*(U[g0](2,i0,j0+1,k0) - U[g0](2,i0,j0-1,k0))+
-		       mMetric[g0](3,i0,j0,k0)*(U[g0](2,i0,j0,k0+1) - U[g0](2,i0,j0,k0-1)) )*factor;
+             mMetric[g0](3,i0,j0,k0)*(U[g0](2,i0,j0,k0+1) - U[g0](2,i0,j0,k0-1)) )*factor;
       float_sw4 duzdz = ( mMetric[g0](4,i0,j0,k0)*(U[g0](3,i0,j0,k0+1) - U[g0](3,i0,j0,k0-1)) )*factor;
       uRec[0] = ( duxdx );
       uRec[1] = ( duydy );
@@ -4406,59 +4650,59 @@ void EW::extractRecordData(TimeSeries::receiverMode mode, int i0, int j0, int k0
      if (g0 < mNumberOfCartesianGrids) // must be a Cartesian grid
      {
 //       int i=m_i0, j=m_j0, k=m_k0, g=m_grid0;
-	float_sw4 factor = 1.0/(2*mGridSize[g0]);
-	float_sw4 duydx = (U[g0](2,i0+1,j0,k0) - U[g0](2,i0-1,j0,k0))*factor;
-	float_sw4 duzdx = (U[g0](3,i0+1,j0,k0) - U[g0](3,i0-1,j0,k0))*factor;
-	float_sw4 duxdy = (U[g0](1,i0,j0+1,k0) - U[g0](1,i0,j0-1,k0))*factor;
-	float_sw4 duzdy = (U[g0](3,i0,j0+1,k0) - U[g0](3,i0,j0-1,k0))*factor;
-	float_sw4 duxdz = (U[g0](1,i0,j0,k0+1) - U[g0](1,i0,j0,k0-1))*factor;
-	float_sw4 duydz = (U[g0](2,i0,j0,k0+1) - U[g0](2,i0,j0,k0-1))*factor;
-	float_sw4 duxdx = (U[g0](1,i0+1,j0,k0) - U[g0](1,i0-1,j0,k0))*factor;
-	float_sw4 duydy = (U[g0](2,i0,j0+1,k0) - U[g0](2,i0,j0-1,k0))*factor;
-	float_sw4 duzdz = (U[g0](3,i0,j0,k0+1) - U[g0](3,i0,j0,k0-1))*factor;
-	uRec[0] =  duxdx;
-	uRec[1] =  duxdy;
-	uRec[2] =  duxdz;
-	uRec[3] =  duydx;
-	uRec[4] =  duydy;
-	uRec[5] =  duydz;
-	uRec[6] =  duzdx;
-	uRec[7] =  duzdy;
-	uRec[8] =  duzdz;
+   float_sw4 factor = 1.0/(2*mGridSize[g0]);
+   float_sw4 duydx = (U[g0](2,i0+1,j0,k0) - U[g0](2,i0-1,j0,k0))*factor;
+   float_sw4 duzdx = (U[g0](3,i0+1,j0,k0) - U[g0](3,i0-1,j0,k0))*factor;
+   float_sw4 duxdy = (U[g0](1,i0,j0+1,k0) - U[g0](1,i0,j0-1,k0))*factor;
+   float_sw4 duzdy = (U[g0](3,i0,j0+1,k0) - U[g0](3,i0,j0-1,k0))*factor;
+   float_sw4 duxdz = (U[g0](1,i0,j0,k0+1) - U[g0](1,i0,j0,k0-1))*factor;
+   float_sw4 duydz = (U[g0](2,i0,j0,k0+1) - U[g0](2,i0,j0,k0-1))*factor;
+   float_sw4 duxdx = (U[g0](1,i0+1,j0,k0) - U[g0](1,i0-1,j0,k0))*factor;
+   float_sw4 duydy = (U[g0](2,i0,j0+1,k0) - U[g0](2,i0,j0-1,k0))*factor;
+   float_sw4 duzdz = (U[g0](3,i0,j0,k0+1) - U[g0](3,i0,j0,k0-1))*factor;
+   uRec[0] =  duxdx;
+   uRec[1] =  duxdy;
+   uRec[2] =  duxdz;
+   uRec[3] =  duydx;
+   uRec[4] =  duydy;
+   uRec[5] =  duydz;
+   uRec[6] =  duzdx;
+   uRec[7] =  duzdy;
+   uRec[8] =  duzdz;
      }
      else // must be curvilinear
      {
 //       int i=m_i0, j=m_j0, k0=m_k00, g0=m_grid0;
-	float_sw4 factor = 0.5/sqrt(mJ[g0](i0,j0,k0));
-	//	float_sw4 duxdq = (U[g0](1,i0+1,j0,k0) - U[g0](1,i0-1,j0,k0));
-	float_sw4 duydq = (U[g0](2,i0+1,j0,k0) - U[g0](2,i0-1,j0,k0));
-	float_sw4 duzdq = (U[g0](3,i0+1,j0,k0) - U[g0](3,i0-1,j0,k0));
-	float_sw4 duxdr = (U[g0](1,i0,j0+1,k0) - U[g0](1,i0,j0-1,k0));
-	//	float_sw4 duydr = (U[g0](2,i0,j0+1,k0) - U[g0](2,i0,j0-1,k0));
-	float_sw4 duzdr = (U[g0](3,i0,j0+1,k0) - U[g0](3,i0,j0-1,k0));
-	float_sw4 duxds = (U[g0](1,i0,j0,k0+1) - U[g0](1,i0,j0,k0-1));
-	float_sw4 duyds = (U[g0](2,i0,j0,k0+1) - U[g0](2,i0,j0,k0-1));
-	float_sw4 duzds = (U[g0](3,i0,j0,k0+1) - U[g0](3,i0,j0,k0-1));
-	float_sw4 duzdy = (mMetric[g0](1,i0,j0,k0)*duzdr+mMetric[g0](3,i0,j0,k0)*duzds)*factor;
-	float_sw4 duydz = (mMetric[g0](4,i0,j0,k0)*duyds)*factor;
-	float_sw4 duxdz = (mMetric[g0](4,i0,j0,k0)*duxds)*factor;
-	float_sw4 duzdx = (mMetric[g0](1,i0,j0,k0)*duzdq+mMetric[g0](2,i0,j0,k0)*duzds)*factor;
-	float_sw4 duydx = (mMetric[g0](1,i0,j0,k0)*duydq+mMetric[g0](2,i0,j0,k0)*duyds)*factor;
-	float_sw4 duxdy = (mMetric[g0](1,i0,j0,k0)*duxdr+mMetric[g0](3,i0,j0,k0)*duxds)*factor;
-	float_sw4 duxdx = ( mMetric[g0](1,i0,j0,k0)*(U[g0](1,i0+1,j0,k0) - U[g0](1,i0-1,j0,k0))+
-		       mMetric[g0](2,i0,j0,k0)*(U[g0](1,i0,j0,k0+1) - U[g0](1,i0,j0,k0-1)) )*factor;
-	float_sw4 duydy = ( mMetric[g0](1,i0,j0,k0)*(U[g0](2,i0,j0+1,k0) - U[g0](2,i0,j0-1,k0))+
-		       mMetric[g0](3,i0,j0,k0)*(U[g0](2,i0,j0,k0+1) - U[g0](2,i0,j0,k0-1)) )*factor;
-	float_sw4 duzdz = ( mMetric[g0](4,i0,j0,k0)*(U[g0](3,i0,j0,k0+1) - U[g0](3,i0,j0,k0-1)) )*factor;
-	uRec[0] =  duxdx;
-	uRec[1] =  duxdy;
-	uRec[2] =  duxdz;
-	uRec[3] =  duydx;
-	uRec[4] =  duydy;
-	uRec[5] =  duydz;
-	uRec[6] =  duzdx;
-	uRec[7] =  duzdy;
-	uRec[8] =  duzdz;
+   float_sw4 factor = 0.5/sqrt(mJ[g0](i0,j0,k0));
+   //	float_sw4 duxdq = (U[g0](1,i0+1,j0,k0) - U[g0](1,i0-1,j0,k0));
+   float_sw4 duydq = (U[g0](2,i0+1,j0,k0) - U[g0](2,i0-1,j0,k0));
+   float_sw4 duzdq = (U[g0](3,i0+1,j0,k0) - U[g0](3,i0-1,j0,k0));
+   float_sw4 duxdr = (U[g0](1,i0,j0+1,k0) - U[g0](1,i0,j0-1,k0));
+   //	float_sw4 duydr = (U[g0](2,i0,j0+1,k0) - U[g0](2,i0,j0-1,k0));
+   float_sw4 duzdr = (U[g0](3,i0,j0+1,k0) - U[g0](3,i0,j0-1,k0));
+   float_sw4 duxds = (U[g0](1,i0,j0,k0+1) - U[g0](1,i0,j0,k0-1));
+   float_sw4 duyds = (U[g0](2,i0,j0,k0+1) - U[g0](2,i0,j0,k0-1));
+   float_sw4 duzds = (U[g0](3,i0,j0,k0+1) - U[g0](3,i0,j0,k0-1));
+   float_sw4 duzdy = (mMetric[g0](1,i0,j0,k0)*duzdr+mMetric[g0](3,i0,j0,k0)*duzds)*factor;
+   float_sw4 duydz = (mMetric[g0](4,i0,j0,k0)*duyds)*factor;
+   float_sw4 duxdz = (mMetric[g0](4,i0,j0,k0)*duxds)*factor;
+   float_sw4 duzdx = (mMetric[g0](1,i0,j0,k0)*duzdq+mMetric[g0](2,i0,j0,k0)*duzds)*factor;
+   float_sw4 duydx = (mMetric[g0](1,i0,j0,k0)*duydq+mMetric[g0](2,i0,j0,k0)*duyds)*factor;
+   float_sw4 duxdy = (mMetric[g0](1,i0,j0,k0)*duxdr+mMetric[g0](3,i0,j0,k0)*duxds)*factor;
+   float_sw4 duxdx = ( mMetric[g0](1,i0,j0,k0)*(U[g0](1,i0+1,j0,k0) - U[g0](1,i0-1,j0,k0))+
+             mMetric[g0](2,i0,j0,k0)*(U[g0](1,i0,j0,k0+1) - U[g0](1,i0,j0,k0-1)) )*factor;
+   float_sw4 duydy = ( mMetric[g0](1,i0,j0,k0)*(U[g0](2,i0,j0+1,k0) - U[g0](2,i0,j0-1,k0))+
+             mMetric[g0](3,i0,j0,k0)*(U[g0](2,i0,j0,k0+1) - U[g0](2,i0,j0,k0-1)) )*factor;
+   float_sw4 duzdz = ( mMetric[g0](4,i0,j0,k0)*(U[g0](3,i0,j0,k0+1) - U[g0](3,i0,j0,k0-1)) )*factor;
+   uRec[0] =  duxdx;
+   uRec[1] =  duxdy;
+   uRec[2] =  duxdz;
+   uRec[3] =  duydx;
+   uRec[4] =  duydy;
+   uRec[5] =  duydz;
+   uRec[6] =  duzdx;
+   uRec[7] =  duzdy;
+   uRec[8] =  duzdz;
      }
 
   } // end DisplacementGradient
@@ -4467,7 +4711,7 @@ void EW::extractRecordData(TimeSeries::receiverMode mode, int i0, int j0, int k0
 
 //---------------------------------------------------------------------------
 void EW::addSuperGridDamping(vector<Sarray> & a_Up, vector<Sarray> & a_U,
-			     vector<Sarray> & a_Um, vector<Sarray> & a_Rho )
+              vector<Sarray> & a_Um, vector<Sarray> & a_Rho )
 {
   int ifirst, ilast, jfirst, jlast, kfirst, klast;
   float_sw4 *up_ptr, *u_ptr, *um_ptr;
@@ -4492,9 +4736,9 @@ void EW::addSuperGridDamping(vector<Sarray> & a_Up, vector<Sarray> & a_U,
        if( topographyExists() && g >= mNumberOfCartesianGrids )
        {
 //FTNC	  if( m_croutines )
-	     addsgd4c_ci( ifirst, ilast, jfirst, jlast, kfirst, klast, up_ptr, u_ptr, um_ptr,
-			  rho_ptr, m_sg_dc_x[g], m_sg_dc_y[g], m_sg_str_x[g], m_sg_str_y[g],
-			  mJ[g].c_ptr(), m_sg_corner_x[g], m_sg_corner_y[g], m_supergrid_damping_coefficient );
+        addsgd4c_ci( ifirst, ilast, jfirst, jlast, kfirst, klast, up_ptr, u_ptr, um_ptr,
+           rho_ptr, m_sg_dc_x[g], m_sg_dc_y[g], m_sg_str_x[g], m_sg_str_y[g],
+           mJ[g].c_ptr(), m_sg_corner_x[g], m_sg_corner_y[g], m_supergrid_damping_coefficient );
 //FTNC          else
 //FTNC	     addsgd4c( &mDt, up_ptr, u_ptr, um_ptr, rho_ptr, m_sg_dc_x[g], m_sg_dc_y[g],
 //FTNC		        m_sg_str_x[g], m_sg_str_y[g], mJ.c_ptr(), m_sg_corner_x[g], m_sg_corner_y[g],
@@ -4503,10 +4747,10 @@ void EW::addSuperGridDamping(vector<Sarray> & a_Up, vector<Sarray> & a_U,
        else
        {
 //FTNC	  if( m_croutines )
-	     addsgd4_ci( ifirst, ilast, jfirst, jlast, kfirst, klast, up_ptr, u_ptr, um_ptr, rho_ptr,
-			 m_sg_dc_x[g], m_sg_dc_y[g], m_sg_dc_z[g], m_sg_str_x[g], m_sg_str_y[g], 
-			 m_sg_str_z[g], m_sg_corner_x[g], m_sg_corner_y[g], m_sg_corner_z[g],
-			 m_supergrid_damping_coefficient );
+        addsgd4_ci( ifirst, ilast, jfirst, jlast, kfirst, klast, up_ptr, u_ptr, um_ptr, rho_ptr,
+          m_sg_dc_x[g], m_sg_dc_y[g], m_sg_dc_z[g], m_sg_str_x[g], m_sg_str_y[g], 
+          m_sg_str_z[g], m_sg_corner_x[g], m_sg_corner_y[g], m_sg_corner_z[g],
+          m_supergrid_damping_coefficient );
 //FTNC	  else
 //FTNC	     addsgd4( &mDt, &mGridSize[g], up_ptr, u_ptr, um_ptr, rho_ptr, m_sg_dc_x[g], m_sg_dc_y[g],
 //FTNC		      m_sg_dc_z[g], m_sg_str_x[g], m_sg_str_y[g], m_sg_str_z[g], m_sg_corner_x[g],
@@ -4519,9 +4763,9 @@ void EW::addSuperGridDamping(vector<Sarray> & a_Up, vector<Sarray> & a_U,
        if( topographyExists() && g >= mNumberOfCartesianGrids )
        {
 //FTNC	  if( m_croutines )
-	     addsgd6c_ci( ifirst, ilast, jfirst, jlast, kfirst, klast, up_ptr, u_ptr, um_ptr,
-			  rho_ptr, m_sg_dc_x[g], m_sg_dc_y[g], m_sg_str_x[g], m_sg_str_y[g],
-			  mJ[g].c_ptr(), m_sg_corner_x[g], m_sg_corner_y[g], m_supergrid_damping_coefficient );
+        addsgd6c_ci( ifirst, ilast, jfirst, jlast, kfirst, klast, up_ptr, u_ptr, um_ptr,
+           rho_ptr, m_sg_dc_x[g], m_sg_dc_y[g], m_sg_str_x[g], m_sg_str_y[g],
+           mJ[g].c_ptr(), m_sg_corner_x[g], m_sg_corner_y[g], m_supergrid_damping_coefficient );
 //FTNC	  else
 //FTNC	     addsgd6c( &mDt, up_ptr, u_ptr, um_ptr, rho_ptr, m_sg_dc_x[g], m_sg_dc_y[g], m_sg_str_x[g],
 //FTNC		       m_sg_str_y[g], mJ.c_ptr(), m_sg_corner_x[g], m_sg_corner_y[g],
@@ -4530,10 +4774,10 @@ void EW::addSuperGridDamping(vector<Sarray> & a_Up, vector<Sarray> & a_U,
        else
        {
 //FTNC	  if( m_croutines )
-	     addsgd6_ci( ifirst, ilast, jfirst, jlast, kfirst, klast, up_ptr, u_ptr, um_ptr, rho_ptr,
-			 m_sg_dc_x[g], m_sg_dc_y[g], m_sg_dc_z[g], m_sg_str_x[g], m_sg_str_y[g], 
-			 m_sg_str_z[g], m_sg_corner_x[g], m_sg_corner_y[g], m_sg_corner_z[g],
-			 m_supergrid_damping_coefficient );
+        addsgd6_ci( ifirst, ilast, jfirst, jlast, kfirst, klast, up_ptr, u_ptr, um_ptr, rho_ptr,
+          m_sg_dc_x[g], m_sg_dc_y[g], m_sg_dc_z[g], m_sg_str_x[g], m_sg_str_y[g], 
+          m_sg_str_z[g], m_sg_corner_x[g], m_sg_corner_y[g], m_sg_corner_z[g],
+          m_supergrid_damping_coefficient );
 //FTNC	  else
 //FTNC	     addsgd6( &mDt, &mGridSize[g], up_ptr, u_ptr, um_ptr, rho_ptr, m_sg_dc_x[g], m_sg_dc_y[g], m_sg_dc_z[g],
 //FTNC		      m_sg_str_x[g], m_sg_str_y[g], m_sg_str_z[g], m_sg_corner_x[g], m_sg_corner_y[g], m_sg_corner_z[g],
@@ -4570,7 +4814,7 @@ void EW::simpleAttenuation( vector<Sarray> & a_Up )
 
 //FTNC    if( m_croutines )
        satt_ci( up_ptr, qs_ptr, dt, cfreq,
-		ifirst, ilast, jfirst, jlast, kfirst, klast );
+      ifirst, ilast, jfirst, jlast, kfirst, klast );
 //FTNC    else
 //FTNC       satt( up_ptr, qs_ptr, &dt, &cfreq,
 //FTNC	     &ifirst, &ilast, &jfirst, &jlast, &kfirst, &klast );
@@ -4597,58 +4841,58 @@ void EW::enforceBCfreeAtt2( vector<Sarray>& a_Up, vector<Sarray>& a_Mu, vector<S
       if( m_bcType[g][4] == bStressFree && !topo ) // Cartesian case
       {
 //FTNC	 //	    if( m_croutines )
-	 //	       memvarforcesurf_ci( ifirst, ilast, jfirst, jlast, k, mf, a_t, om,
-	 //				   cv, ph, mOmegaVE[0], mDt, h, m_zmin[g] );
+    //	       memvarforcesurf_ci( ifirst, ilast, jfirst, jlast, k, mf, a_t, om,
+    //				   cv, ph, mOmegaVE[0], mDt, h, m_zmin[g] );
 //FTNC	 //	    else
 //FTNC	 //	       memvarforcesurf( &ifirst, &ilast, &jfirst, &jlast, &k, mf, &a_t, &om,
 //FTNC	 //				&cv, &ph, &mOmegaVE[0], &mDt, &h, &m_zmin[g] );
-	 //	 }
-	 //	 else
-	 //	    memforce.set_value(0.0);
-	//	 const float_sw4 i6  = 1.0/6;
-	 const float_sw4 d4a = 2.0/3;
-	 const float_sw4 d4b =-1.0/12;
-	 float_sw4* forcing = a_BCForcing[g][4];
-	 int ni = (ilast-ifirst+1);
+    //	 }
+    //	 else
+    //	    memforce.set_value(0.0);
+   //	 const float_sw4 i6  = 1.0/6;
+    const float_sw4 d4a = 2.0/3;
+    const float_sw4 d4b =-1.0/12;
+    float_sw4* forcing = a_BCForcing[g][4];
+    int ni = (ilast-ifirst+1);
 #pragma omp parallel
-	 {
-	    //	 float_sw4* r1 = new float_sw4[m_number_mechanisms];
-	    //	 float_sw4* r2 = new float_sw4[m_number_mechanisms];
-	    //	 float_sw4* r3 = new float_sw4[m_number_mechanisms];
-	    //	 float_sw4* cof = new float_sw4[m_number_mechanisms];
+    {
+       //	 float_sw4* r1 = new float_sw4[m_number_mechanisms];
+       //	 float_sw4* r2 = new float_sw4[m_number_mechanisms];
+       //	 float_sw4* r3 = new float_sw4[m_number_mechanisms];
+       //	 float_sw4* cof = new float_sw4[m_number_mechanisms];
 #pragma omp for
-	 for( int j=jfirst+2 ; j<=jlast-2 ; j++ )
-	    for( int i=ifirst+2 ; i<=ilast-2 ; i++ )
-	    {
-	       float_sw4 g1, g2, g3, acof, bcof;
-	       int ind = i-ifirst + ni*(j-jfirst);
-	       float_sw4 a4ci, b4ci, a4cj, b4cj;
-	       a4ci = a4cj = d4a;
-	       b4ci = b4cj = d4b;
-	       if( sg == 1 )
-	       {
-		  a4ci = d4a*m_sg_str_x[g][i-ifirst];
-		  b4ci = d4b*m_sg_str_x[g][i-ifirst];
-		  a4cj = d4a*m_sg_str_y[g][j-jfirst];
-		  b4cj = d4b*m_sg_str_y[g][j-jfirst];
-	       }
+    for( int j=jfirst+2 ; j<=jlast-2 ; j++ )
+       for( int i=ifirst+2 ; i<=ilast-2 ; i++ )
+       {
+          float_sw4 g1, g2, g3, acof, bcof;
+          int ind = i-ifirst + ni*(j-jfirst);
+          float_sw4 a4ci, b4ci, a4cj, b4cj;
+          a4ci = a4cj = d4a;
+          b4ci = b4cj = d4b;
+          if( sg == 1 )
+          {
+        a4ci = d4a*m_sg_str_x[g][i-ifirst];
+        b4ci = d4b*m_sg_str_x[g][i-ifirst];
+        a4cj = d4a*m_sg_str_y[g][j-jfirst];
+        b4cj = d4b*m_sg_str_y[g][j-jfirst];
+          }
 // this would be more efficient if done in Fortran
 // first add interior elastic terms (use ghost point stencils)
-	       g1 =  h*forcing[3*ind]
+          g1 =  h*forcing[3*ind]
                   - a_Mu[g](i,j,1)*
                   (m_sbop[1]*a_Up[g](1,i,j,1) + m_sbop[2]*a_Up[g](1,i,j,2)
                    + m_sbop[3]*a_Up[g](1,i,j,3) + m_sbop[4]*a_Up[g](1,i,j,4) + m_sbop[5]*a_Up[g](1,i,j,5)
                    + a4ci*(a_Up[g](3,i+1,j,1)-a_Up[g](3,i-1,j,1))
                    + b4ci*(a_Up[g](3,i+2,j,1)-a_Up[g](3,i-2,j,1)) );
 
-	       g2 =  h*forcing[3*ind+1]
+          g2 =  h*forcing[3*ind+1]
                   - a_Mu[g](i,j,1)*
                   ( m_sbop[1]*a_Up[g](2,i,j,1) + m_sbop[2]*a_Up[g](2,i,j,2)
                     + m_sbop[3]*a_Up[g](2,i,j,3) + m_sbop[4]*a_Up[g](2,i,j,4) + m_sbop[5]*a_Up[g](2,i,j,5)
                     + a4cj*(a_Up[g](3,i,j+1,1)-a_Up[g](3,i,j-1,1))
                     + b4cj*(a_Up[g](3,i,j+2,1)-a_Up[g](3,i,j-2,1)) );
 
-	       g3 =  h*forcing[3*ind+2]
+          g3 =  h*forcing[3*ind+2]
                   - (2*a_Mu[g](i,j,1)+a_Lambda[g](i,j,1))*
                   ( m_sbop[1]*a_Up[g](3,i,j,1) + m_sbop[2]*a_Up[g](3,i,j,2)
                     + m_sbop[3]*a_Up[g](3,i,j,3) + m_sbop[4]*a_Up[g](3,i,j,4)  + m_sbop[5]*a_Up[g](3,i,j,5) )
@@ -4658,14 +4902,14 @@ void EW::enforceBCfreeAtt2( vector<Sarray>& a_Up, vector<Sarray>& a_Mu, vector<S
                     + a4cj*(a_Up[g](2,i,j+1,1)-a_Up[g](2,i,j-1,1))
                     + b4cj*(a_Up[g](2,i,j+2,1)-a_Up[g](2,i,j-2,1)) );
                
-	       acof = a_Mu[g](i,j,1);
-	       bcof = 2*a_Mu[g](i,j,1)+a_Lambda[g](i,j,1);
-	       for( int a=0 ; a < m_number_mechanisms ; a++ )
-	       {
+          acof = a_Mu[g](i,j,1);
+          bcof = 2*a_Mu[g](i,j,1)+a_Lambda[g](i,j,1);
+          for( int a=0 ; a < m_number_mechanisms ; a++ )
+          {
 // this would be more efficient if done in Fortran
 // Add in visco-elastic contributions (NOT using ghost points)
 // mu*( a1_z + a3_x )
-		  g1 = g1 + mMuVE[g][a](i,j,1)*
+        g1 = g1 + mMuVE[g][a](i,j,1)*
                      ( m_sbop_no_gp[0]*a_AlphaVEp[g][a](1,i,j,0) + m_sbop_no_gp[1]*a_AlphaVEp[g][a](1,i,j,1)
                        + m_sbop_no_gp[2]*a_AlphaVEp[g][a](1,i,j,2)
                        + m_sbop_no_gp[3]*a_AlphaVEp[g][a](1,i,j,3)
@@ -4673,7 +4917,7 @@ void EW::enforceBCfreeAtt2( vector<Sarray>& a_Up, vector<Sarray>& a_Mu, vector<S
                        + a4ci*(a_AlphaVEp[g][a](3,i+1,j,1)-a_AlphaVEp[g][a](3,i-1,j,1))
                        + b4ci*(a_AlphaVEp[g][a](3,i+2,j,1)-a_AlphaVEp[g][a](3,i-2,j,1)) );
 // mu*( a2_z + a3_y )
-		  g2 = g2 + mMuVE[g][a](i,j,1)*
+        g2 = g2 + mMuVE[g][a](i,j,1)*
                      ( m_sbop_no_gp[0]*a_AlphaVEp[g][a](2,i,j,0) + m_sbop_no_gp[1]*a_AlphaVEp[g][a](2,i,j,1)
                        + m_sbop_no_gp[2]*a_AlphaVEp[g][a](2,i,j,2)
                        + m_sbop_no_gp[3]*a_AlphaVEp[g][a](2,i,j,3)
@@ -4681,7 +4925,7 @@ void EW::enforceBCfreeAtt2( vector<Sarray>& a_Up, vector<Sarray>& a_Mu, vector<S
                        + a4cj*(a_AlphaVEp[g][a](3,i,j+1,1)-a_AlphaVEp[g][a](3,i,j-1,1))
                        + b4cj*(a_AlphaVEp[g][a](3,i,j+2,1)-a_AlphaVEp[g][a](3,i,j-2,1)) );
 // (2*mu + lambda)*( a3_z ) + lambda*( a1_x + a2_y )
-		  g3 = g3 + (2*mMuVE[g][a](i,j,1)+mLambdaVE[g][a](i,j,1))*
+        g3 = g3 + (2*mMuVE[g][a](i,j,1)+mLambdaVE[g][a](i,j,1))*
                      (m_sbop_no_gp[0]*a_AlphaVEp[g][a](3,i,j,0)
                       + m_sbop_no_gp[1]*a_AlphaVEp[g][a](3,i,j,1) + m_sbop_no_gp[2]*a_AlphaVEp[g][a](3,i,j,2)
                       + m_sbop_no_gp[3]*a_AlphaVEp[g][a](3,i,j,3)
@@ -4691,56 +4935,56 @@ void EW::enforceBCfreeAtt2( vector<Sarray>& a_Up, vector<Sarray>& a_Mu, vector<S
                        + b4ci*(a_AlphaVEp[g][a](1,i+2,j,1)-a_AlphaVEp[g][a](1,i-2,j,1)) 
                        + a4cj*(a_AlphaVEp[g][a](2,i,j+1,1)-a_AlphaVEp[g][a](2,i,j-1,1))
                        + b4cj*(a_AlphaVEp[g][a](2,i,j+2,1)-a_AlphaVEp[g][a](2,i,j-2,1)) );
-	       } // end for all mechanisms
+          } // end for all mechanisms
 // solve for the ghost point value of Up (stencil uses ghost points for the elastic variable)
-	       a_Up[g](1,i,j,0) = g1/(acof*m_sbop[0]);
-	       a_Up[g](2,i,j,0) = g2/(acof*m_sbop[0]);
-	       a_Up[g](3,i,j,0) = g3/(bcof*m_sbop[0]);
-	    }
-	 }
+          a_Up[g](1,i,j,0) = g1/(acof*m_sbop[0]);
+          a_Up[g](2,i,j,0) = g2/(acof*m_sbop[0]);
+          a_Up[g](3,i,j,0) = g3/(bcof*m_sbop[0]);
+       }
+    }
       }    // end if bcType[g][4] == bStressFree   
       if( m_bcType[g][5] == bStressFree  )
       {
          int nk=m_global_nz[g];
-	 //	 const float_sw4 i6  = 1.0/6;
-	 const float_sw4 d4a = 2.0/3;
-	 const float_sw4 d4b =-1.0/12;
-	 float_sw4* forcing = a_BCForcing[g][5];
-	 int ni = (ilast-ifirst+1);
+    //	 const float_sw4 i6  = 1.0/6;
+    const float_sw4 d4a = 2.0/3;
+    const float_sw4 d4b =-1.0/12;
+    float_sw4* forcing = a_BCForcing[g][5];
+    int ni = (ilast-ifirst+1);
 #pragma omp parallel
-	 {
+    {
 #pragma omp for
-	 for( int j=jfirst+2 ; j<=jlast-2 ; j++ )
-	    for( int i=ifirst+2 ; i<=ilast-2 ; i++ )
-	    {
-	       float_sw4 g1, g2, g3, acof, bcof;
-	       int ind = i-ifirst + ni*(j-jfirst);
-	       float_sw4 a4ci, b4ci, a4cj, b4cj;
-	       a4ci = a4cj = d4a;
-	       b4ci = b4cj = d4b;
-	       if( sg == 1 )
-	       {
-		  a4ci = d4a*m_sg_str_x[g][i-ifirst];
-		  b4ci = d4b*m_sg_str_x[g][i-ifirst];
-		  a4cj = d4a*m_sg_str_y[g][j-jfirst];
-		  b4cj = d4b*m_sg_str_y[g][j-jfirst];
-	       }
+    for( int j=jfirst+2 ; j<=jlast-2 ; j++ )
+       for( int i=ifirst+2 ; i<=ilast-2 ; i++ )
+       {
+          float_sw4 g1, g2, g3, acof, bcof;
+          int ind = i-ifirst + ni*(j-jfirst);
+          float_sw4 a4ci, b4ci, a4cj, b4cj;
+          a4ci = a4cj = d4a;
+          b4ci = b4cj = d4b;
+          if( sg == 1 )
+          {
+        a4ci = d4a*m_sg_str_x[g][i-ifirst];
+        b4ci = d4b*m_sg_str_x[g][i-ifirst];
+        a4cj = d4a*m_sg_str_y[g][j-jfirst];
+        b4cj = d4b*m_sg_str_y[g][j-jfirst];
+          }
 // add in contributions from elastic terms
-	       g1 = h*forcing[3*ind] - a_Mu[g](i,j,nk)*
+          g1 = h*forcing[3*ind] - a_Mu[g](i,j,nk)*
                   (-m_sbop[1]*a_Up[g](1,i,j,nk) - m_sbop[2]*a_Up[g](1,i,j,nk-1) 
                    -m_sbop[3]*a_Up[g](1,i,j,nk-2) - m_sbop[4]*a_Up[g](1,i,j,nk-3)
                    -m_sbop[5]*a_Up[g](1,i,j,nk-4)
                    + a4ci*(a_Up[g](3,i+1,j,nk)-a_Up[g](3,i-1,j,nk))
                    + b4ci*(a_Up[g](3,i+2,j,nk)-a_Up[g](3,i-2,j,nk)) );
 
-	       g2 = h*forcing[3*ind+1] - a_Mu[g](i,j,nk)*
+          g2 = h*forcing[3*ind+1] - a_Mu[g](i,j,nk)*
                   (-m_sbop[1]*a_Up[g](2,i,j,nk) - m_sbop[2]*a_Up[g](2,i,j,nk-1)
                    -m_sbop[3]*a_Up[g](2,i,j,nk-2) - m_sbop[4]*a_Up[g](2,i,j,nk-3)
                    -m_sbop[5]*a_Up[g](2,i,j,nk-4)
                    + a4cj*(a_Up[g](3,i,j+1,nk)-a_Up[g](3,i,j-1,nk))
                    + b4cj*(a_Up[g](3,i,j+2,nk)-a_Up[g](3,i,j-2,nk)) );
 
-	       g3 =  h*forcing[3*ind+2] - (2*a_Mu[g](i,j,nk)+a_Lambda[g](i,j,nk))*
+          g3 =  h*forcing[3*ind+2] - (2*a_Mu[g](i,j,nk)+a_Lambda[g](i,j,nk))*
                   ( -m_sbop[1]*a_Up[g](3,i,j,nk) - m_sbop[2]*a_Up[g](3,i,j,nk-1) 
                     -m_sbop[3]*a_Up[g](3,i,j,nk-2) - m_sbop[4]*a_Up[g](3,i,j,nk-3)
                     -m_sbop[5]*a_Up[g](3,i,j,nk-4) )
@@ -4750,12 +4994,12 @@ void EW::enforceBCfreeAtt2( vector<Sarray>& a_Up, vector<Sarray>& a_Mu, vector<S
                     + a4cj*(a_Up[g](2,i,j+1,nk)-a_Up[g](2,i,j-1,nk))
                     + b4cj*(a_Up[g](2,i,j+2,nk)-a_Up[g](2,i,j-2,nk)) );
                
-	       acof = a_Mu[g](i,j,nk);
-	       bcof = 2*a_Mu[g](i,j,nk)+a_Lambda[g](i,j,nk);
-	       for( int a=0 ; a < m_number_mechanisms ; a++ )
-	       {
+          acof = a_Mu[g](i,j,nk);
+          bcof = 2*a_Mu[g](i,j,nk)+a_Lambda[g](i,j,nk);
+          for( int a=0 ; a < m_number_mechanisms ; a++ )
+          {
 // visco-elastic terms (NOT using ghost points)
-		  g1 = g1 + mMuVE[g][a](i,j,nk)*
+        g1 = g1 + mMuVE[g][a](i,j,nk)*
                      (-m_sbop_no_gp[0]*a_AlphaVEp[g][a](1,i,j,nk+1) - m_sbop_no_gp[1]*a_AlphaVEp[g][a](1,i,j,nk)
                       -m_sbop_no_gp[2]*a_AlphaVEp[g][a](1,i,j,nk-1)
                       -m_sbop_no_gp[3]*a_AlphaVEp[g][a](1,i,j,nk-2) - m_sbop_no_gp[4]*a_AlphaVEp[g][a](1,i,j,nk-3)
@@ -4763,7 +5007,7 @@ void EW::enforceBCfreeAtt2( vector<Sarray>& a_Up, vector<Sarray>& a_Mu, vector<S
                       +a4ci*(a_AlphaVEp[g][a](3,i+1,j,nk)-a_AlphaVEp[g][a](3,i-1,j,nk))
                       +b4ci*(a_AlphaVEp[g][a](3,i+2,j,nk)-a_AlphaVEp[g][a](3,i-2,j,nk)));
 
-		  g2 = g2 + mMuVE[g][a](i,j,nk)*
+        g2 = g2 + mMuVE[g][a](i,j,nk)*
                      ( - m_sbop_no_gp[0]*a_AlphaVEp[g][a](2,i,j,nk+1) -m_sbop_no_gp[1]*a_AlphaVEp[g][a](2,i,j,nk)
                        - m_sbop_no_gp[2]*a_AlphaVEp[g][a](2,i,j,nk-1)
                        - m_sbop_no_gp[3]*a_AlphaVEp[g][a](2,i,j,nk-2) -m_sbop_no_gp[4]*a_AlphaVEp[g][a](2,i,j,nk-3)
@@ -4771,7 +5015,7 @@ void EW::enforceBCfreeAtt2( vector<Sarray>& a_Up, vector<Sarray>& a_Mu, vector<S
                        + a4cj*(a_AlphaVEp[g][a](3,i,j+1,nk)-a_AlphaVEp[g][a](3,i,j-1,nk))
                        + b4cj*(a_AlphaVEp[g][a](3,i,j+2,nk)-a_AlphaVEp[g][a](3,i,j-2,nk)) );
                                                   
-		  g3 = g3 + (2*mMuVE[g][a](i,j,nk)+mLambdaVE[g][a](i,j,nk))*
+        g3 = g3 + (2*mMuVE[g][a](i,j,nk)+mLambdaVE[g][a](i,j,nk))*
                      (- m_sbop_no_gp[0]*a_AlphaVEp[g][a](3,i,j,nk+1) - m_sbop_no_gp[1]*a_AlphaVEp[g][a](3,i,j,nk)
                       - m_sbop_no_gp[2]*a_AlphaVEp[g][a](3,i,j,nk-1)
                       - m_sbop_no_gp[3]*a_AlphaVEp[g][a](3,i,j,nk-2) - m_sbop_no_gp[4]*a_AlphaVEp[g][a](3,i,j,nk-3)
@@ -4781,13 +5025,13 @@ void EW::enforceBCfreeAtt2( vector<Sarray>& a_Up, vector<Sarray>& a_Mu, vector<S
                       + b4ci*(a_AlphaVEp[g][a](1,i+2,j,nk)-a_AlphaVEp[g][a](1,i-2,j,nk)) 
                       + a4cj*(a_AlphaVEp[g][a](2,i,j+1,nk)-a_AlphaVEp[g][a](2,i,j-1,nk))
                       + b4cj*(a_AlphaVEp[g][a](2,i,j+2,nk)-a_AlphaVEp[g][a](2,i,j-2,nk)) );
-	       }
+          }
                // solve for the ghost point value of Up (using the ghost point stencil)
-	       a_Up[g](1,i,j,nk+1) = g1/(-m_sbop[0]*acof);
-	       a_Up[g](2,i,j,nk+1) = g2/(-m_sbop[0]*acof);
-	       a_Up[g](3,i,j,nk+1) = g3/(-m_sbop[0]*bcof);
-	    }
-	 }
+          a_Up[g](1,i,j,nk+1) = g1/(-m_sbop[0]*acof);
+          a_Up[g](2,i,j,nk+1) = g2/(-m_sbop[0]*acof);
+          a_Up[g](3,i,j,nk+1) = g3/(-m_sbop[0]*bcof);
+       }
+    }
       }// end if bcType[g][5] == bStressFree
    
 // all the curvilinear code needs to be overhauled
@@ -4798,19 +5042,19 @@ void EW::enforceBCfreeAtt2( vector<Sarray>& a_Up, vector<Sarray>& a_Mu, vector<S
          float_sw4* up_p = a_Up[g].c_ptr();
          int side = 5;
          int nz = m_global_nz[g];
-	 //         int ghno = 0;
-	 //         char op = '-';
-	 float_sw4* forcing = a_BCForcing[g][4];
-	 int usesg = usingSupergrid() ? 1 : 0;
+    //         int ghno = 0;
+    //         char op = '-';
+    float_sw4* forcing = a_BCForcing[g][4];
+    int usesg = usingSupergrid() ? 1 : 0;
 
 // make a local copy of the boundary forcing array to simplify access
          Sarray bforcerhs(3,ifirst,ilast,jfirst,jlast,1,1);
          bforcerhs.assign(forcing,0);
 
 //FTNC	 //	 if( m_croutines )
-	 //	    addbstressc_ci( ifirst, ilast, jfirst, jlast, kfirst, klast,
-	 //			    nz, up_p, mu_p, la_p, bforcerhs.c_ptr(), mMetric.c_ptr(), 
-	 //			    side, m_sbop, op, ghno, usesg, m_sg_str_x[g], m_sg_str_y[g] );
+    //	    addbstressc_ci( ifirst, ilast, jfirst, jlast, kfirst, klast,
+    //			    nz, up_p, mu_p, la_p, bforcerhs.c_ptr(), mMetric.c_ptr(), 
+    //			    side, m_sbop, op, ghno, usesg, m_sg_str_x[g], m_sg_str_y[g] );
 //FTNC	 //	 else
 //FTNC	 //	    addbstressc( &ifirst, &ilast, &jfirst, &jlast, &kfirst, &klast,
 //FTNC	 //			 &nz, up_p, mu_p, la_p, bforcerhs.c_ptr(), mMetric.c_ptr(), 
@@ -4823,7 +5067,7 @@ void EW::enforceBCfreeAtt2( vector<Sarray>& a_Up, vector<Sarray>& a_Mu, vector<S
             float_sw4* alphap_p = a_AlphaVEp[g][a].c_ptr();
             // This function adds the visco-elastic boundary stresses to bforcerhs
 //FTNC	    if(  m_croutines )
-	       ve_bndry_stress_curvi_ci( ifirst, ilast, jfirst, jlast, kfirst, klast, nz,
+          ve_bndry_stress_curvi_ci( ifirst, ilast, jfirst, jlast, kfirst, klast, nz,
                                   alphap_p, mu_ve_p, lave_p, bforcerhs.c_ptr(), mMetric[g].c_ptr(), side,
                                   m_sbop_no_gp, usesg, m_sg_str_x[g], m_sg_str_y[g] ); // no ghost points here
 //FTNC	    else
@@ -4834,7 +5078,7 @@ void EW::enforceBCfreeAtt2( vector<Sarray>& a_Up, vector<Sarray>& a_Mu, vector<S
          
 // update GHOST POINT VALUES OF UP
 //FTNC	 if( m_croutines )
-	    att_free_curvi_ci( ifirst, ilast, jfirst, jlast, kfirst, klast,
+       att_free_curvi_ci( ifirst, ilast, jfirst, jlast, kfirst, klast,
                          up_p, mu_p, la_p, bforcerhs.c_ptr(), mMetric[g].c_ptr(), m_sbop, // use ghost points
                          usesg, m_sg_str_x[g], m_sg_str_y[g] );
 //FTNC	 else

@@ -423,12 +423,21 @@ void EW::setupRun( vector<vector<Source*> > & a_GlobalUniqueSources )
      getDtFromRestartFile();
   else
   {
-     if( m_anisotropic )
-	computeDTanisotropic();
-     else
-	computeDT( );
-     if( proc_zero_evzero() )
-        cout << "  time step = " << mDt << endl;
+    if( m_anisotropic )
+      computeDTanisotropic();
+    else if ( m_use_DRM ){
+      if (!mQuiet && mVerbose >= 1 && proc_zero_evzero())
+      {
+        printf("*** computing the time step ***\n");
+        printf("using time step loaded from DRM information...\n");
+      }
+      mDt = m_DRM_dt;
+      // number of time steps was set previously when drm info was read in
+    }
+    else
+      computeDT( );
+    if( proc_zero_evzero() )
+      cout << "  time step = " << mDt << endl;
   }
 
   if( m_output_detailed_timing )
@@ -440,7 +449,6 @@ void EW::setupRun( vector<vector<Source*> > & a_GlobalUniqueSources )
   initialize_image_files();
   if( mVerbose && proc_zero_evzero() )
     cout << "*** Initialized Images" << endl;
-
   if( m_output_detailed_timing )
      time_measure[9] = MPI_Wtime();
 
@@ -820,7 +828,7 @@ void EW::preprocessSources( vector<vector<Source*> > & a_GlobalUniqueSources )
       if (m_use_EQL)
       {
         if (!mQuiet && mVerbose >= 1 && proc_zero() )
-          printf("\nEQL: Calculating distance to sources...");
+          printf("\n* EQL: Calculating distance to %i sources...", a_GlobalUniqueSources[e].size());
 
         // Each processor computes the start and end (x,y) on finest grid (g = mNumberOfGrids-1)
         float_sw4 xStart = (m_iStartInt[mNumberOfGrids-1]-1)*mGridSize[mNumberOfGrids-1];
@@ -847,30 +855,6 @@ void EW::preprocessSources( vector<vector<Source*> > & a_GlobalUniqueSources )
               (sY >= yStart-1.1*m_src_Dmin)
             )
             {
-              // // The vertical bounds within which to check the points for distance
-              // // from this source
-              // float_sw4 zStart = sZ - 1.1*m_src_Dmin;
-              // float_sw4 zEnd = sZ + 1.1*m_src_Dmin;
-
-              // // We check the grids to see if we can exclude some cartesian
-              // // grids from the search
-              // int gmax = mNumberOfGrids-1;
-              // int gmin = 0;
-              // // If the deepest point to check is in a curvilinear grid
-              // if (zEnd <= m_zmin[mNumberOfCartesianGrids-1])
-              //   gmin = mNumberOfCartesianGrids;
-              // else
-              // {
-              //   for (int g = 0; g<mNumberOfCartesianGrids; g++)
-              //   {
-              //       if (
-              //         (zEnd >= m_zmin[g]) &&
-              //         (zEnd <= m_zmin[g]+(m_kEndInt[g]-1)*mGridSize[g])
-              //       )
-              //         gmin = g;
-              //   }
-              // }
-
               for (int g = 0; g<mNumberOfGrids; g++)
               for (int k = m_kStartIntEQL[g]; k <= m_kEndIntEQL[g]; k++ )
               for (int j = m_jStartIntEQL[g]; j <= m_jEndIntEQL[g]; j++ )
@@ -893,7 +877,7 @@ void EW::preprocessSources( vector<vector<Source*> > & a_GlobalUniqueSources )
         } // end for e
 
         if (!mQuiet && mVerbose >= 1 && proc_zero() )
-          printf("\nEQL: Counting number of EQL grid points... \n");
+          printf("\n* EQL: Counting number of EQL grid points... \n");
         int supergrid_pts;
         long long int totptstmp = 0; // and compute total eql grid points
         long long int eqlptstmp0 = 0; 
@@ -953,12 +937,12 @@ void EW::preprocessSources( vector<vector<Source*> > & a_GlobalUniqueSources )
         MPI_Allreduce( &totptstmp, &m_totPoints, 1, MPI_LONG_LONG_INT, MPI_SUM, m_cartesian_communicator );
         if (!mQuiet && mVerbose >= 1 && proc_zero() )
         {
-          printf("\nProcessed dist. (min %4.2fm) to src. for each grid point. \n", m_src_Dmin);
-          printf("Points in bin 1: %12lld\n", m_eqlPoints[0]);
-          printf("Points in bin 2: %12lld\n", m_eqlPoints[1]);
-          printf("Points in bin 3: %12lld\n", m_eqlPoints[2]);
-          printf("Points in bin 4: %12lld\n", m_eqlPoints[3]);
-          printf("  Total EQL pts: %12lld\n", m_totPoints);
+          // printf("\nProcessed dist. (min %4.2fm) to src. for each grid point. \n", m_src_Dmin);
+          printf("> Points in Vs bin 1: %12lld\n", m_eqlPoints[0]);
+          printf("> Points in Vs bin 2: %12lld\n", m_eqlPoints[1]);
+          printf("> Points in Vs bin 3: %12lld\n", m_eqlPoints[2]);
+          printf("> Points in Vs bin 4: %12lld\n", m_eqlPoints[3]);
+          printf("* Total EQL pts: %12lld\n", m_totPoints);
         }
       } // end if using EQL
 

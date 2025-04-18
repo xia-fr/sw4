@@ -494,6 +494,7 @@ EW::EW(const string& fileName, vector<vector<Source*> > & a_GlobalSources,
   //  m_intp_conservative(true),
   mMaterialExtrapolate(0),
 
+  // EQL VARIABLES
   m_use_EQL(false),
   m_conv_EQL(false),
   m_iterLim_EQL(99),
@@ -504,6 +505,14 @@ EW::EW(const string& fileName, vector<vector<Source*> > & a_GlobalSources,
   m_vslim_eql(3500.0),
   m_max_depth_eql(6400000.0),
   m_max_z_eql(6400000.0),
+
+  // DRM VARIABLES
+  m_use_DRM(false),
+  m_DRM_iMin(-999),
+  m_DRM_iMax(-999),
+  m_DRM_jMin(-999),
+  m_DRM_jMax(-999),
+  m_DRM_kMax(-999),
 
   m_use_attenuation(false),
   m_number_mechanisms(0),

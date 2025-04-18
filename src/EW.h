@@ -74,6 +74,7 @@
 //#include "Farray.h"
 //#include "CurvilinearInterface.h"
 
+#include "DRMSource.h"
 
 using namespace std;
 
@@ -203,6 +204,42 @@ void processAttenuation(char* buffer);
 void processRandomBlock(char* buffer);
 void processCheckPoint(char* buffer);
 void processGeodynbc(char* buffer);
+
+// DRM FUNCTIONS AND VARIABLES (in DRM.C)
+void processDRM(char* buffer);
+void readDRMHDF5_grid(
+  char *fname,
+  float_sw4 &x, float_sw4 &y, float_sw4 &z, float_sw4 &h,
+  float_sw4 &x0, float_sw4 &y0,
+  double &lat, double &lon );
+void readDRMHDF5_double( hid_t fid, const char *dname, float_sw4 &data );
+void constructDRMgrid( float_sw4 &x, float_sw4 &y, float_sw4 &z,
+  float_sw4 &h, float_sw4 &lat, float_sw4 &lon );
+void readDRMHDF5_data( char* buffer );
+
+void DRMSourcesToUField( vector<Sarray>& a_U, float_sw4 t, bool inner );
+
+void evalForce(vector<Sarray> & a_Up, vector<Sarray> & a_U, vector<Sarray> & a_Um,
+  vector<Sarray> & a_Rho, vector<Sarray> & a_Lu,
+  vector<Sarray> & a_F, bool inner );
+void maskForce(vector<Sarray> & a_F );
+
+bool point_on_DRM_boundary(int a_i, int a_j, int a_k, int a_g, bool inner);
+bool point_outside_DRM_boundary(int a_i, int a_j, int a_k, int a_g);
+bool point_inside_DRM_boundary(int a_i, int a_j, int a_k, int a_g);
+
+bool usingDRM() { return m_use_DRM; };
+void debugPrinter_drm( Sarray & a_Var );
+
+// Variables
+bool m_use_DRM;
+// these min and max values are the same on each processor and represent
+// the global min/max boundaries of drm
+float_sw4 m_DRM_xMin, m_DRM_xMax, m_DRM_yMin, m_DRM_yMax, m_DRM_zMax;
+int m_DRM_iMin, m_DRM_iMax, m_DRM_jMin, m_DRM_jMax, m_DRM_kMax;
+float_sw4 m_DRM_dt;
+vector<DRMSource*> m_DRMSources;
+// END DRM FUNCTIONS AND VARIABLES
 
 void processEvent( char* buffer, int enr );
 //void getEfileInfo(char* buffer);

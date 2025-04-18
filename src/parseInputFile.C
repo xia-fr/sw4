@@ -210,105 +210,121 @@ bool EW::parseInputFile( vector<vector<Source*> > & a_GlobalUniqueSources,
   }
   bool foundGrid = false;
 
-// tmp (the fileio command has not yet been parsed, so we don't know mVerbose
-//  cout << "********Reading the input file, proc=" << m_myRank << endl;
+  // tmp (the fileio command has not yet been parsed, so we don't know mVerbose
+  //  cout << "********Reading the input file, proc=" << m_myRank << endl;
 
-// First process Geodyn input for restrictions of allowable grid sizes.
- while (!inputFile.eof())
- {
+  // First process Geodyn input for restrictions of allowable grid sizes.
+  while (!inputFile.eof())
+  {
     inputFile.getline(buffer, 256);
     if( startswith("geodynbc",buffer ) )
-       geodynFindFile(buffer);
- }
- inputFile.clear();
- inputFile.seekg(0, ios::beg);
+      geodynFindFile(buffer);
+  }
+  inputFile.clear();
+  inputFile.seekg(0, ios::beg);
 
-// process the testrayleigh command to enable a periodic domain in the (x,y)-directions
-// these commands can enter data directly the object (this->)
+  // process the testrayleigh command to enable a periodic domain in the (x,y)-directions
+  // these commands can enter data directly the object (this->)
   while (!inputFile.eof())
   {    
-     inputFile.getline(buffer, 256);
-     if (startswith("testrayleigh", buffer) )
-     {
-       m_doubly_periodic = true;
-     }
-     else if( startswith("testenergy",buffer) )
-     {
-	m_doubly_periodic = checkTestEnergyPeriodic(buffer);
-     }
-     else if (startswith("refinement",buffer) )
-     {
-	// mesh refinements require 3 ghost points, must know 
-	// before processing grid command.
-	m_mesh_refinements = true;
-     }
-     else if( startswith("supergrid",buffer) )
-     {
-	// If supergrid damping is 6th order, 3 ghost points are needed, must know 
-	// before processing grid command.
-	processSupergrid(buffer);
-     }
-     else if( startswith("developer",buffer) )
-	processDeveloper(buffer); // Need this early to determine array index order before any arrays are used.
+    inputFile.getline(buffer, 256);
+    if (startswith("testrayleigh", buffer) )
+    {
+      m_doubly_periodic = true;
+    }
+    else if( startswith("testenergy",buffer) )
+    {
+      m_doubly_periodic = checkTestEnergyPeriodic(buffer);
+    }
+    else if (startswith("refinement",buffer) )
+    {
+      // mesh refinements require 3 ghost points, must know 
+      // before processing grid command.
+      m_mesh_refinements = true;
+    }
+    else if( startswith("supergrid",buffer) )
+    {
+      // If supergrid damping is 6th order, 3 ghost points are needed, must know 
+      // before processing grid command.
+      processSupergrid(buffer);
+    }
+    else if( startswith("developer",buffer) )
+    {
+      processDeveloper(buffer); // Need this early to determine array index order before any arrays are used.
+    }
+    // read fileio here to enable verbose warnings in other commands
+    // fx: moved this up so DRM can use proper number of readers for HDF5
+    else if (startswith("fileio", buffer))
+      processFileIO(buffer);
   }
-
   inputFile.clear();
   inputFile.seekg(0, ios::beg); // reset file pointer to the beginning of the input file
 
-//---------------------------------------------------------------
-// Then process the grid, fileio, and topography commands so
-// we know how big the solution arrays need to be.
-//
-// Also, if we are using attenuation, enable it on now so it
-// can be read in with the other material properties
-//---------------------------------------------------------------
+  // DRM command has to be processed after supergrid, but before grid
+  while (!inputFile.eof())
+  {
+    inputFile.getline(buffer, 256);
+    if( startswith("DRM", buffer) )
+    {
+      foundGrid = true;
+      processDRM(buffer);
+    }
+  }
+  inputFile.clear();
+  inputFile.seekg(0, ios::beg); // reset file pointer to the beginning of the input file
 
-// these commands can enter data directly into the object (this->)
+  //---------------------------------------------------------------
+  // Then process the grid, fileio, and topography commands so
+  // we know how big the solution arrays need to be.
+  //
+  // Also, if we are using attenuation, enable it on now so it
+  // can be read in with the other material properties
+  //---------------------------------------------------------------
+
+  // these commands can enter data directly into the object (this->)
   while (!inputFile.eof())
   {    
-     inputFile.getline(buffer, 256);
-     if( startswith("grid", buffer) )
-     {
-       foundGrid = true;
-       processGrid(buffer);
-     }
-// read fileio here to enable verbose warnings in other commands
-     else if (startswith("fileio", buffer))
-     {
-       processFileIO(buffer);
-     }
-     else if (startswith("refinement", buffer))
-     {
-	processRefinement(buffer);
-     }
-     else if (startswith("topography", buffer))
-     {
-        processTopography(buffer);
-     }
-     else if (startswith("eql", buffer))
-     {
-        processEQL(buffer);
-     }
-     else if (startswith("attenuation", buffer))
-     {
-        processAttenuation(buffer);
-     }
-     else if (startswith("anisotropy", buffer))
-     {
-        m_anisotropic = true;
-     }
-     else if (startswith("time", buffer))
-     {
-        processTime(buffer); // process time command to set reference UTC before reading stations.
-     }
-     else if (startswith("prefilter", buffer))
-     {
-       // before reading any rupture command, we need to know 
-       // if they need to be prefiltered  
-       processPrefilter(buffer);
-     }
+    inputFile.getline(buffer, 256);
+    if( startswith("grid", buffer) )
+    {
+      if ( m_use_DRM ){
+        cout << "Warning: grid command ignored because grid is being specified by DRM." << endl;
+      } else {
+        foundGrid = true;
+        processGrid(buffer);
+      }
+    }
+    else if (startswith("refinement", buffer)){
+      if ( m_use_DRM ){
+         cout << "Warning: refinement command ignored because DRM has only been designed to be implemented for a single grid." << endl;
+      } else {
+      processRefinement(buffer);
+      }
+    }
+    else if (startswith("topography", buffer)){
+      if ( m_use_DRM ){
+         cout << "Warning: topography command ignored, not implemented with DRM yet." << endl;
+      } else {
+         processTopography(buffer);
+      }
+    }
+    else if (startswith("eql", buffer))
+      processEQL(buffer);
+    else if (startswith("attenuation", buffer))
+      processAttenuation(buffer);
+    else if (startswith("anisotropy", buffer))
+      m_anisotropic = true;
+    else if (startswith("time", buffer))
+      processTime(buffer); // process time command to set reference UTC before reading stations.
+    else if (startswith("prefilter", buffer))
+    {
+      // before reading any rupture command, we need to know 
+      // if they need to be prefiltered  
+      processPrefilter(buffer);
+    }
   }
-// make sure there was a grid command
+
+  // make sure there was a grid command
   if (!foundGrid)
   {
     if (m_myRank == 0)
@@ -336,90 +352,83 @@ bool EW::parseInputFile( vector<vector<Source*> > & a_GlobalUniqueSources,
     }
   }  
 
-//  if( m_mesh_refinements && (m_anisotropic || (m_use_attenuation && m_number_mechanisms>0) ) )
+  // if( m_mesh_refinements && (m_anisotropic || (m_use_attenuation && m_number_mechanisms>0) ) )
   if( m_mesh_refinements && m_anisotropic )
   {
     if (m_myRank == 0)
     {
-//      cerr << "Error: Grid refinements not implemented with attenuation or anisotropy " << endl;
+      // cerr << "Error: Grid refinements not implemented with attenuation or anisotropy " << endl;
       cerr << "Error: Grid refinements not implemented with anisotropy " << endl;
       return false; // unsuccessful
     }
   }
 
-// sort and correct vector 'm_refinementBoundaries'. Initialize if not already available
+  // sort and correct vector 'm_refinementBoundaries'. Initialize if not already available
   cleanUpRefinementLevels();
   
   inputFile.clear();
   inputFile.seekg(0, ios::beg); // reset file pointer to the beginning of the input file
 
-// At this point we only allocate solution arrays for the Cartesian grids 
-// Need to read the topography information before we can decide on sizes for the
-// curvilinear grid.
+  // At this point we only allocate solution arrays for the Cartesian grids 
+  // Need to read the topography information before we can decide on sizes for the
+  // curvilinear grid.
   allocateCartesianSolverArrays(m_global_zmax); 
 
-// setup 2D communicators on the finest grid so that we can smooth the topography
+  // setup 2D communicators on the finest grid so that we can smooth the topography
   setup2D_MPICommunications();
 
-// deal with topography
+  // deal with topography
   if (m_topography_exists)
   {
-     if (m_topoInputStyle == EW::GridFile)
-     {
- 	extractTopographyFromGridFile(m_topoFileName);
-     }
-     else if (m_topoInputStyle == EW::CartesianGrid)
-     {
- 	extractTopographyFromCartesianFile(m_topoFileName);
-     }
-     else if (m_topoInputStyle == EW::TopoImage)
-     {
- 	extractTopographyFromImageFile(m_topoFileName);
-     }
-     else if (m_topoInputStyle == EW::GaussianHill) // assumed to populate all grid points
-     {
-        m_gridGenerator->fill_topo( mTopo, mGridSize[mNumberOfGrids-1] );
-        m_gridGenerator->fill_topo( mTopoGridExt, mGridSize[mNumberOfGrids-1] );
-        // 	buildGaussianHillTopography(m_GaussianAmp, m_GaussianLx, m_GaussianLy, m_GaussianXc, m_GaussianYc);
-     }      
-     else if( m_topoInputStyle == EW::Rfile )
-	extractTopographyFromRfile( m_topoFileName );
-     else if( m_topoInputStyle == EW::Sfile )
-	extractTopographyFromSfile( m_topoFileName );
-     else if( m_topoInputStyle == EW::GMG )
-	extractTopographyFromGMG( m_topoFileName );
+    if (m_topoInputStyle == EW::GridFile)
+      extractTopographyFromGridFile(m_topoFileName);
+    else if (m_topoInputStyle == EW::CartesianGrid)
+      extractTopographyFromCartesianFile(m_topoFileName);
+    else if (m_topoInputStyle == EW::TopoImage)
+      extractTopographyFromImageFile(m_topoFileName);
+    else if (m_topoInputStyle == EW::GaussianHill) // assumed to populate all grid points
+    {
+      m_gridGenerator->fill_topo( mTopo, mGridSize[mNumberOfGrids-1] );
+      m_gridGenerator->fill_topo( mTopoGridExt, mGridSize[mNumberOfGrids-1] );
+      // 	buildGaussianHillTopography(m_GaussianAmp, m_GaussianLx, m_GaussianLy, m_GaussianXc, m_GaussianYc);
+    }      
+    else if( m_topoInputStyle == EW::Rfile )
+      extractTopographyFromRfile( m_topoFileName );
+    else if( m_topoInputStyle == EW::Sfile )
+      extractTopographyFromSfile( m_topoFileName );
+    else if( m_topoInputStyle == EW::GMG )
+      extractTopographyFromGMG( m_topoFileName );
 
-// preprocess the mTopo array
-     if (m_topoInputStyle != EW::GaussianHill) // no smoothing or extrapolation for a gaussian hill
-     {
-// 1. fill in any undefined ghost point values by extrapolation
-	extrapolateTopo(mTopo);
-// 2. check that all values are defined...
-	checkTopo(mTopo);
-// 3. smooth the topo
- 	smoothTopography(m_maxIter);
+    // preprocess the mTopo array
+    if (m_topoInputStyle != EW::GaussianHill) // no smoothing or extrapolation for a gaussian hill
+    {
+      // 1. fill in any undefined ghost point values by extrapolation
+      extrapolateTopo(mTopo);
+      // 2. check that all values are defined...
+      checkTopo(mTopo);
+      // 3. smooth the topo
+      smoothTopography(m_maxIter);
 
-// Assign interface surfaces (needed when there is MR in the curvilinear portion of the grid)
-        m_gridGenerator->assignInterfaceSurfaces( this, mTopoGridExt );
-     }
-     
-// // 3. Figure out the number of grid points in the vertical direction and allocate solution arrays on the curvilinear grid
-     allocateCurvilinearArrays(); // need to assign  m_global_nz[g] = klast - m_ghost_points; + allocate mUacc
+      // Assign interface surfaces (needed when there is MR in the curvilinear portion of the grid)
+      m_gridGenerator->assignInterfaceSurfaces( this, mTopoGridExt );
+    }
+
+    // 3. Figure out the number of grid points in the vertical direction and allocate solution arrays on the curvilinear grid
+    allocateCurvilinearArrays(); // need to assign  m_global_nz[g] = klast - m_ghost_points; + allocate mUacc
   }
   else
   {
-     if (proc_zero_evzero())
-	cout << endl << 
-	   "*** No topography command found in input file. Using z=0 as free surface boundary ***" << endl << endl;
+    if (proc_zero_evzero())
+    cout << endl << 
+    "*** No topography command found in input file. Using z=0 as free surface boundary ***" << endl << endl;
   }
 
-// setup communicators for 3D solutions on all grids
+  // setup communicators for 3D solutions on all grids
   setupMPICommunications();
 
-
-// Make curvilinear grid and compute metric
+  // Make curvilinear grid and compute metric
   for( int g=mNumberOfCartesianGrids ; g < mNumberOfGrids ; g++ )
-     m_gridGenerator->generate_grid_and_met( this, g, mX[g], mY[g], mZ[g], mJ[g], mMetric[g] );
+    m_gridGenerator->generate_grid_and_met( this, g, mX[g], mY[g], mZ[g], mJ[g], mMetric[g] );
 
   //  if (m_topography_exists)
   //  {
@@ -438,7 +447,7 @@ bool EW::parseInputFile( vector<vector<Source*> > & a_GlobalUniqueSources,
   //     }
   //  }
 
-// output grid size info
+  // output grid size info
   if (proc_zero_evzero())
   {
     int nx, ny, nz;
@@ -457,145 +466,167 @@ bool EW::parseInputFile( vector<vector<Source*> > & a_GlobalUniqueSources,
     }
     printf("Total number of grid points (without ghost points): %g\n\n", nTot);
   }
+
+  // From the hdf5 file containing the DRM info, we read in:
+  // - 3 component time series for each grid point on the DRM boundary
+  // - the corresponding xyz coordinate of each g.p. on the DRM boundary,
+  //   relative to the DRM boundary origin
+  // Notes:
+  // - relative to this DRM simulation's grid origin, the DRM boundary origin 
+  //   will have the xyz coordinates: ((Nsg-1)*h + 5*h, (Nsg-1)*h + 5*h, 0.0)
+  // - this step has to happen after allocateCartesianSolverArrays
+  if ( m_use_DRM ){
+    while (!inputFile.eof()){
+        inputFile.getline(buffer, 256);
+        if( startswith("DRM", buffer) ){
+          readDRMHDF5_data(buffer);
+        }
+    }
+    inputFile.clear();
+    inputFile.seekg(0, ios::beg); // reset file pointer to the beginning of the input file
+    
+    // MPI_Barrier(MPI_COMM_WORLD);
+    // cout << "Warning: exiting now while finishing up DRM implementation." << endl;
+    // MPI_Abort( MPI_COMM_WORLD, 1 );
+  }
   
   //----------------------------------------------------------
   // Now onto the rest of the input file...
   //----------------------------------------------------------
   while (!inputFile.eof())
   {
-     inputFile.getline(buffer, 256);
+    inputFile.getline(buffer, 256);
 
-     if (strlen(buffer) > 0) // empty lines produce this
-     {
-       if (startswith("#", buffer) || 
-	   startswith("grid", buffer) ||
-	   startswith("refinement", buffer) || 
-	   startswith("topography", buffer) || 
-	   startswith("attenuation", buffer) || 
+    if (strlen(buffer) > 0) // empty lines produce this
+    {
+      if (startswith("#", buffer) || 
+      startswith("grid", buffer) ||
+      startswith("refinement", buffer) || 
+      startswith("topography", buffer) || 
+      startswith("attenuation", buffer) || 
       startswith("eql", buffer) || 
-	   startswith("anisotropy", buffer) || 
-	   startswith("fileio", buffer) ||
-	   startswith("supergrid", buffer) ||
-	   startswith("prefilter", buffer) ||
-	   startswith("developer", buffer) ||
-	   startswith("time", buffer) ||
-// ignore material optimizer commands
- 	   startswith("event", buffer) ||
- 	   startswith("mparcart", buffer) ||
-	   startswith("mpallpts", buffer) ||
- 	   startswith("mrun", buffer) ||
- 	   startswith("mscalefactors", buffer) ||
- 	   startswith("lbfgs", buffer) ||
- 	   startswith("nlcg", buffer) ||
- 	   startswith("mfsurf", buffer) ||
- 	   startswith("mimage", buffer) ||	   	   
- 	   startswith("m3dimage", buffer) ||	   	   
- 	   startswith("regularize", buffer) ||	   	   
- 	   startswith("mtypx", buffer) ||
-	   startswith("\n", buffer) || startswith("\r", buffer) )
-// || startswith("\r", buffer) || startswith("\0", buffer))
-       {
-// Ignore commented lines, newlines,
-// grid, fileio, and topography, since we have already processed those commands.
-       }
-       else if (startswith("gmt", buffer))
-         processGMT(buffer);
-       else if (startswith("checkpoint",buffer))
-	  processCheckPoint(buffer);
-       else if (startswith("globalmaterial", buffer))
-         processGlobalMaterial(buffer);
-       else if (!m_inverse_problem && (startswith("rechdf5", buffer) || startswith("sachdf5", buffer)) ) // was called "sac" in WPP
-	 processReceiverHDF5(buffer, a_GlobalTimeSeries);
-       else if (!m_inverse_problem && (startswith("rec", buffer) || startswith("sac", buffer)) ) // was called "sac" in WPP
-	 processReceiver(buffer, a_GlobalTimeSeries);
-       else if (m_inverse_problem && (startswith("obshdf5", buffer) || startswith("observationhdf5", buffer))) // 
-	  processObservationHDF5(buffer, a_GlobalTimeSeries);
-       else if (m_inverse_problem && startswith("obs", buffer)) // 
-	  processObservation(buffer, a_GlobalTimeSeries);
-       else if (m_inverse_problem && startswith("scalefactors", buffer)) // 
-	  processScaleFactors(buffer);
-       else if (m_inverse_problem && startswith("cg", buffer)) // 
-	  processCG(buffer);
-       // else if (startswith("energy", buffer))
-       //   processEnergy(buffer);
-       else if (startswith("twilight", buffer))
-	 processTwilight(buffer);
-       else if (startswith("testpointsource", buffer))
-	 processTestPointSource(buffer);
-       else if (startswith("testlamb", buffer))
-         processTestLamb(buffer);
-       else if (startswith("testrayleigh", buffer))
-         processTestRayleigh(buffer);
-       else if (startswith("testenergy", buffer))
-         processTestEnergy(buffer);
-       else if (startswith("source", buffer))
-	 processSource(buffer, a_GlobalUniqueSources);
-       else if (startswith("rupturehdf5", buffer))
-	 processRuptureHDF5(buffer, a_GlobalUniqueSources);
-       else if (startswith("rupture", buffer))
-	 processRupture(buffer, a_GlobalUniqueSources);
-       else if (startswith("block", buffer))
-	 processMaterialBlock(buffer, blockCount);
-       else if (startswith("ablock", buffer) && m_anisotropic )
-	 processAnisotropicMaterialBlock(buffer, ablockCount);
-       else if (startswith("pfile", buffer))
-	 processMaterialPfile( buffer );
-       else if (startswith("rfile", buffer))
-	 processMaterialRfile( buffer );
-       else if (startswith("sfileoutput", buffer))
-          processSfileOutput(buffer);
-       else if (startswith("sfile", buffer))
-	 processMaterialSfile( buffer );
-       else if (startswith("gmg", buffer))
-	 processMaterialGMG( buffer );
-       else if (startswith("vimaterial", buffer))
-	 processMaterialVimaterial( buffer );
-       else if (startswith("invtestmaterial", buffer))
-	  processMaterialInvtest(buffer);
-       else if (startswith("ifile", buffer))
-          processMaterialIfile(buffer);
-       else if (startswith("material", buffer))
-          processMaterial(buffer);
-       else if (startswith("imagehdf5", buffer))
-         processImage(buffer, true);
-       else if (startswith("image", buffer))
-         processImage(buffer, false);
-       else if (startswith("volimage", buffer))
-          processImage3D(buffer);
-       else if (startswith("ssioutput", buffer))
-          processESSI3D(buffer);
-       else if (startswith("essioutput", buffer))
-          processESSI3D(buffer);
-       else if (startswith("boundary_conditions", buffer))
-         processBoundaryConditions(buffer);
-       //       else if (startswith("supergrid", buffer))
-       //         processSupergrid(buffer);
-       // else if (startswith("prefilter", buffer))
-       // 	 processPrefilter(buffer);
-       else if( startswith("developer", buffer ) )
-          processDeveloper(buffer);
-       else if( startswith("geodynbc", buffer ) )
-          processGeodynbc(buffer);
-       else if( startswith("randomize", buffer ) )
-       {
-	  //          processRandomize(buffer);
-	  if( m_myRank == 0 )
-	     cout << "randomize command is no longer supported. Use `randomblock' instead" <<endl;
-       }
-       else if( startswith("randomblock", buffer ) )
-          processRandomBlock(buffer);
-       else if (!inputFile.eof() && m_myRank == 0)
-       {
-	 // Maybe just reached eof, don't want to echo
-	 // the ignoring command line for nothing
-	 cout << "*** Ignoring command: '" << buffer << "'" << endl;
-       }
-     } // end if strlen(buffer) > 0
-     
+      startswith("DRM", buffer) || 
+      startswith("anisotropy", buffer) || 
+      startswith("fileio", buffer) ||
+      startswith("supergrid", buffer) ||
+      startswith("prefilter", buffer) ||
+      startswith("developer", buffer) ||
+      startswith("time", buffer) ||
+      // ignore material optimizer commands
+      startswith("event", buffer) ||
+      startswith("mparcart", buffer) ||
+      startswith("mpallpts", buffer) ||
+      startswith("mrun", buffer) ||
+      startswith("mscalefactors", buffer) ||
+      startswith("lbfgs", buffer) ||
+      startswith("nlcg", buffer) ||
+      startswith("mfsurf", buffer) ||
+      startswith("mimage", buffer) ||	   	   
+      startswith("m3dimage", buffer) ||	   	   
+      startswith("regularize", buffer) ||	   	   
+      startswith("mtypx", buffer) ||
+      startswith("\n", buffer) || startswith("\r", buffer) )
+      {
+        // Ignore commented lines, newlines,
+        // grid, fileio, and topography, since we have already processed those commands.
+      }
+      else if (startswith("gmt", buffer))
+        processGMT(buffer);
+      else if (startswith("checkpoint",buffer))
+        processCheckPoint(buffer);
+      else if (startswith("globalmaterial", buffer))
+        processGlobalMaterial(buffer);
+      else if (!m_inverse_problem && (startswith("rechdf5", buffer) || startswith("sachdf5", buffer)) ) // was called "sac" in WPP
+        processReceiverHDF5(buffer, a_GlobalTimeSeries);
+      else if (!m_inverse_problem && (startswith("rec", buffer) || startswith("sac", buffer)) ) // was called "sac" in WPP
+        processReceiver(buffer, a_GlobalTimeSeries);
+      else if (m_inverse_problem && (startswith("obshdf5", buffer) || startswith("observationhdf5", buffer))) // 
+        processObservationHDF5(buffer, a_GlobalTimeSeries);
+      else if (m_inverse_problem && startswith("obs", buffer)) // 
+        processObservation(buffer, a_GlobalTimeSeries);
+      else if (m_inverse_problem && startswith("scalefactors", buffer)) // 
+        processScaleFactors(buffer);
+      else if (m_inverse_problem && startswith("cg", buffer)) // 
+        processCG(buffer);
+      // else if (startswith("energy", buffer))
+      //   processEnergy(buffer);
+      else if (startswith("twilight", buffer))
+        processTwilight(buffer);
+      else if (startswith("testpointsource", buffer))
+        processTestPointSource(buffer);
+      else if (startswith("testlamb", buffer))
+        processTestLamb(buffer);
+      else if (startswith("testrayleigh", buffer))
+        processTestRayleigh(buffer);
+      else if (startswith("testenergy", buffer))
+        processTestEnergy(buffer);
+      else if (startswith("source", buffer))
+        processSource(buffer, a_GlobalUniqueSources);
+      else if (startswith("rupturehdf5", buffer))
+        processRuptureHDF5(buffer, a_GlobalUniqueSources);
+      else if (startswith("rupture", buffer))
+        processRupture(buffer, a_GlobalUniqueSources);
+      else if (startswith("block", buffer))
+        processMaterialBlock(buffer, blockCount);
+      else if (startswith("ablock", buffer) && m_anisotropic )
+        processAnisotropicMaterialBlock(buffer, ablockCount);
+      else if (startswith("pfile", buffer))
+        processMaterialPfile( buffer );
+      else if (startswith("rfile", buffer))
+        processMaterialRfile( buffer );
+      else if (startswith("sfileoutput", buffer))
+        processSfileOutput(buffer);
+      else if (startswith("sfile", buffer))
+        processMaterialSfile( buffer );
+      else if (startswith("gmg", buffer))
+        processMaterialGMG( buffer );
+      else if (startswith("vimaterial", buffer))
+        processMaterialVimaterial( buffer );
+      else if (startswith("invtestmaterial", buffer))
+        processMaterialInvtest(buffer);
+      else if (startswith("ifile", buffer))
+        processMaterialIfile(buffer);
+      else if (startswith("material", buffer))
+        processMaterial(buffer);
+      else if (startswith("imagehdf5", buffer))
+        processImage(buffer, true);
+      else if (startswith("image", buffer))
+        processImage(buffer, false);
+      else if (startswith("volimage", buffer))
+        processImage3D(buffer);
+      else if (startswith("ssioutput", buffer))
+        processESSI3D(buffer);
+      else if (startswith("essioutput", buffer))
+        processESSI3D(buffer);
+      else if (startswith("boundary_conditions", buffer))
+        processBoundaryConditions(buffer);
+      //       else if (startswith("supergrid", buffer))
+      //         processSupergrid(buffer);
+      // else if (startswith("prefilter", buffer))
+      // 	 processPrefilter(buffer);
+      else if( startswith("developer", buffer ) )
+        processDeveloper(buffer);
+      else if( startswith("geodynbc", buffer ) )
+        processGeodynbc(buffer);
+      else if( startswith("randomize", buffer ) )
+      {
+      //          processRandomize(buffer);
+        if( m_myRank == 0 )
+          cout << "randomize command is no longer supported. Use `randomblock' instead" <<endl;
+      }
+      else if( startswith("randomblock", buffer ) )
+        processRandomBlock(buffer);
+      else if (!inputFile.eof() && m_myRank == 0)
+      {
+        // Maybe just reached eof, don't want to echo
+        // the ignoring command line for nothing
+        cout << "*** Ignoring command: '" << buffer << "'" << endl;
+      }
+    } // end if strlen(buffer) > 0
   } // end while !inputFile.eof() 
   
   if (m_myRank == 0)
-     cout << endl;
+    cout << endl;
 
   inputFile.close();
 
@@ -4940,6 +4971,24 @@ void EW::allocateCartesianSolverArrays(float_sw4 a_global_zmax)
         m_jEndIntEQL[g] = m_jEndInt[g];
         m_kStartIntEQL[g] = m_kStartInt[g];
         m_kEndIntEQL[g] = m_kEndInt[g];
+        if ( m_use_DRM ){
+          // if using DRM, we automatically limit the points to run
+          // EQL on to inside the DRM domain
+          // note: if we are using DRM, there should only be one
+          //       grid by design, so we automatically use g=0 here
+          if ( m_iStartIntEQL[0] < m_DRM_iMin+4 )
+            m_iStartIntEQL[0] = m_DRM_iMin+4;
+          if ( m_iEndIntEQL[0] > m_DRM_iMax-4 )
+            m_iEndIntEQL[0] = m_DRM_iMax-4;
+
+          if ( m_jStartIntEQL[0] < m_DRM_jMin+4 )
+            m_jStartIntEQL[0] = m_DRM_jMin+4;
+          if ( m_jEndIntEQL[0] > m_DRM_jMax-4 )
+            m_jEndIntEQL[0] = m_DRM_jMax-4;
+
+          if ( m_kEndIntEQL[0] > m_DRM_kMax-4 )
+            m_kEndIntEQL[0] = m_DRM_kMax-4;
+        }
 
         // Set up vs bin boundaries for convergence criteria
         m_vsBins_EQL.resize(3);
@@ -5893,7 +5942,7 @@ void EW::processSource(char* buffer, vector<vector<Source*> > & a_GlobalUniqueSo
       {
          token += 6;
          strncpy(dfile, token,1000);
-	 dfileset = true;
+         dfileset = true;
       }
       else if (startswith("sacbase=",token))
       {
@@ -5951,7 +6000,7 @@ void EW::processSource(char* buffer, vector<vector<Source*> > & a_GlobalUniqueSo
      ipar    = new int[1];
      ipar[0] = npts;
      for( int i=0 ; i < npts ; i++ )
-	ret = fscanf(fd,"%lg", &par[i+1] );
+        ret = fscanf(fd,"%lg", &par[i+1] );
      npar = npts+1;
      nipar = 1;
      //     cout << "Read disc source: t0=" << t0 << " dt="  << dt << " npts= " << npts << endl;

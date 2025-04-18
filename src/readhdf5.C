@@ -572,7 +572,7 @@ void readRuptureHDF5(char *fname, vector<vector<Source*> > & a_GlobalUniqueSourc
   int nSources=0, nu1=0, nu2=0, nu3=0;
 
   stime = MPI_Wtime();
-  // Only rank 0 reads data, then broadcast to all other processes
+  // Only color 0 reads data, then broadcast to all other processes
   if (read_color == 0) {
 
     fapl = H5Pcreate(H5P_FILE_ACCESS);
