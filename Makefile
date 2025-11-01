@@ -212,7 +212,7 @@ endif
 
 ifeq ($(zfp),yes)
    CXXFLAGS  += -I$(H5ZROOT)/include -I$(ZFPROOT)/include -DUSE_ZFP
-   linklibs += -L$(H5ZROOT)/lib -L$(ZFPROOT)/lib -lh5zzfp -lzfp -Wl,-rpath,$(H5ZROOT)/lib  -Wl,-rpath,$(ZFPROOT)/lib
+   linklibs += -L$(H5ZROOT)/lib -L$(ZFPROOT)/lib64 -lh5zzfp -lzfp -Wl,-rpath,$(H5ZROOT)/lib  -Wl,-rpath,$(ZFPROOT)/lib64
 endif
 
 ifeq ($(sz),yes)
@@ -260,6 +260,9 @@ OBJ  = EW.o Sarray.o version.o parseInputFile.o ForcingTwilight.o \
 
 # Equivalent linear
  OBJ +=  EquivalentLinear.o 
+
+# DRM
+ OBJ +=  DRM.o DRMSource.o
 
 # Fortran routines (lamb_exact_numquad needs QUADPACK)
  OBJ +=  rayleighfort.o lamb_exact_numquad.o 
