@@ -595,11 +595,11 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
   // save any images for cycle = 0 (initial data), or beginCycle-1 (checkpoint restart)
   if ( (m_conv_EQL) || (!m_use_EQL) ) // if EQL being used, only record on converged iteration
   {
-    reverse_setup_viscoelastic();
+    //reverse_setup_viscoelastic();
     update_images( beginCycle-1, t, U, Um, Up, a_Rho, a_Mu, a_Lambda, a_Sources, 1 );
     for( int i3 = 0 ; i3 < mImage3DFiles.size() ; i3++ )
       mImage3DFiles[i3]->update_image( beginCycle-1, t, mDt, U, a_Rho, a_Mu, a_Lambda, a_Rho, a_Mu, a_Lambda, mQp, mQs, mPath[eglobal], mZ );
-    setup_viscoelastic();
+    //setup_viscoelastic();
   }
   int gg = mNumberOfGrids-1; // top grid
   for( int i3 = 0 ; i3 < mESSI3DFiles.size() ; i3++ ) {
