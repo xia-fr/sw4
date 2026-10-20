@@ -1,0 +1,46 @@
+# Notes for compilation on NERSC Perlmutter:
+# module load PrgEnv-gnu
+# module load cpu
+# module load spack/0.22
+# spack env activate gcc
+# make clean
+# make
+
+# Optional loads(?):
+# spack load proj
+# spack load /hqmo4ua
+# spack load fftw
+
+etree = no
+
+# CXX = C++ compiler, HPE Cray Compiler Wrapper for gcc
+CXX = CC
+
+# FC  = Fortran compiler, HPE Cray Compiler Wrapper for gcc
+FC = ftn
+
+# SW4ROOT = path to third party libraries (used when proj=yes)
+# Find paths using `spack location -i proj%gcc@12.3.0`
+proj = yes
+SW4ROOT = /global/common/software/spackecp/perlmutter/v0.22/96029/spack/opt/spack/linux-sles15-zen3/gcc-12.3.0/proj-9.2.1-wvm5npsvec2lky6p3fy5zxavd6yrfvam
+
+# HDF5ROOT = path to hdf5 library and include files (used when hdf5=yes)
+# using the unique hash hqmo4ua for a version of hdf5 on perlmutter spack
+hdf5 = yes
+HDF5ROOT = /global/homes/f/fxia/spack-workspace/perlmutter/software/linux-sles15-zen3/gcc-12.3.0/hdf5-1.14.3-ugkg7uklf7zpecbmmdayl3ng3dsg342y
+
+# FFTWHOME = path to fftw library and include files (used when fftw=yes)
+fftw = yes
+FFTWHOME = /global/common/software/spackecp/perlmutter/v0.22/96029/spack/opt/spack/linux-sles15-zen3/gcc-12.3.0/fftw-3.3.10-k7n6jfjocfxm5lo54soo5v2t2qlce4tt
+
+# ZFPROOT = path to ZFP library and include files (used when zfp=yes)
+zfp = yes
+ZFPROOT = /global/homes/f/fxia/spack-workspace/perlmutter/software/linux-sles15-zen3/gcc-12.3.0/zfp-1.0.0-yqjqrblxgbcxqbbq353dmjub2mjstx5i
+
+# H5ZROOT = path to H5Z-ZFP library and include files (used when zfp=yes)
+H5ZROOT = /global/homes/f/fxia/spack-workspace/perlmutter/software/linux-sles15-zen3/gcc-12.3.0/h5z-zfp-1.1.1-i3iq23jxuawgh55vj63er6qwppy2erwp
+
+LAPACK = /opt/cray/pe/libsci/default/gnu/12.3/x86_64
+EXTRA_LINK_FLAGS = -Wl,-rpath=${FFTWHOME}/lib -Wl,-rpath=${SW4ROOT}/lib -L${LAPACK}/lib64 -llapack -lblas -lgfortran
+
+optdir := optimize_pm
