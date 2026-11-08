@@ -27,6 +27,14 @@ import functools
 print = functools.partial(print, flush=True) # Don't buffer print
 import hdf5plugin # Use this when SW4 output uses ZFP compression, can be installed with "pip install hdf5plugin"
 
+# [PY-1] NEW: chunk layout for 'node_motion_data'. SW4 now reads the node motions
+#   one time window at a time (DRM ... window=N), i.e. a few thousand columns of
+#   many rows. With the old contiguous layout every row of a window is a separate
+#   small read; with chunks of (rows x DRM_CHUNK_TIME) each window read touches
+#   whole chunks. Keep DRM_CHUNK_TIME equal to (or a divisor of) the SW4 window.
+DRM_CHUNK_ROWS = 192   # 64 nodes x 3 components
+DRM_CHUNK_TIME = 512   # time samples per chunk; set with -c/--chunktime
+
 def plot_cube(save_path, cube_definition, x, y, z, view):
     """
     Plots a 3D cube and the grid points of interest specified by 
@@ -377,7 +385,10 @@ def create_hdf5_csv(
     dt = tstep*essi_dt
     
     print('Create HDF5 file with ', ncoord, ' coordinates, ', nstep, ' steps')
-    dset = h5file.create_dataset('node_motion_data', (ncoord*3, nstep), dtype='f4')
+    # [PY-2] CHANGED: chunked instead of contiguous (see [PY-1])
+    chunks = (min(DRM_CHUNK_ROWS, ncoord*3), min(DRM_CHUNK_TIME, nstep))
+    print('node_motion_data chunk shape:', chunks)
+    dset = h5file.create_dataset('node_motion_data', (ncoord*3, nstep), dtype='f4', chunks=chunks)
     dset = h5file.create_dataset('xyz', (ncoord, 3), dtype='f4')
     
     # use array form [dt] instead of scalar dt, so that it has a shape and facilitate postprocessing
@@ -433,14 +444,22 @@ def str_to_coord_3d(s):
     val = s.split(',')
     return int(val[0]), int(val[1]), int(val[2])
     
-def allocate_neighbor_coords_8(data_dict, x, y, z, n, chk_x, chk_y, chk_z, nchk_x, nchk_y, nchk_z):
+def allocate_neighbor_coords_8(data_dict, x, y, z, n, chk_x, chk_y, chk_z, nchk_x, nchk_y, nchk_z, nmax=None):
+    # [PY-4] CHANGED: neighbours are int(x)+0/1 (the cell corners used by
+    #   linear_interp) and are clamped to the last grid point when nmax=(nx,ny,nz)
+    #   is given, so a node lying on the upper face of the ESSI volume does not
+    #   ask for a point outside it.
     nadd = 0
     add_cids_dict = {}
     neighbour = 2
     for i0 in range(0, neighbour):
         for i1 in range(0, neighbour):
             for i2 in range(0, neighbour):
-                intx, inty, intz = int(x+i0), int(y+i1), int(z+i2)
+                intx, inty, intz = int(x)+i0, int(y)+i1, int(z)+i2
+                if nmax is not None:
+                    intx = min(intx, nmax[0]-1)
+                    inty = min(inty, nmax[1]-1)
+                    intz = min(intz, nmax[2]-1)
                 coord_str = coord_to_str_3d(intx, inty, intz)
                 if coord_str not in data_dict:
                     data_dict[coord_str] = np.zeros(n)
@@ -485,6 +504,38 @@ def read_hdf5_by_chunk(ssi_fname, data_dict, comp, cids_dict, chk_x, chk_y, chk_
             endtime = time.time()
             #print('assign value time', endtime-starttime)
     fid.close()
+
+def linear_interp(data_dict, x, y, z, nmax=None):
+    """
+    [PY-5] RESTORED from the original convert.py (with clamping added).
+    Trilinear interpolation of the time series in data_dict at the fractional
+    ESSI grid index (x, y, z), from the 8 surrounding grid points allocated by
+    allocate_neighbor_coords_8.
+
+    See: McCallen et al., Coupling of regional geophysics and local soil-structure
+    models in the EQSIM fault-to-structure earthquake simulation framework.
+    """
+    x0, y0, z0 = int(x), int(y), int(z)
+    xd, yd, zd = x - x0, y - y0, z - z0
+    if xd > 1 or xd < 0 or yd > 1 or yd < 0 or zd > 1 or zd < 0:
+        print('Error with linear interpolation input:', x, y, z)
+        exit(0)
+    x1, y1, z1 = x0+1, y0+1, z0+1
+    if nmax is not None:   # on the upper face the "+1" point has zero weight; clamp it
+        x1, y1, z1 = min(x1, nmax[0]-1), min(y1, nmax[1]-1), min(z1, nmax[2]-1)
+
+    c000 = data_dict[coord_to_str_3d(x0, y0, z0)]
+    c001 = data_dict[coord_to_str_3d(x0, y0, z1)]
+    c010 = data_dict[coord_to_str_3d(x0, y1, z0)]
+    c011 = data_dict[coord_to_str_3d(x0, y1, z1)]
+    c100 = data_dict[coord_to_str_3d(x1, y0, z0)]
+    c101 = data_dict[coord_to_str_3d(x1, y0, z1)]
+    c110 = data_dict[coord_to_str_3d(x1, y1, z0)]
+    c111 = data_dict[coord_to_str_3d(x1, y1, z1)]
+
+    result = ((c000 * (1-xd) + c100 * xd) * (1-yd) + (c010 * (1-xd) + c110 * xd) * yd) * (1-zd) \
+           + ((c001 * (1-xd) + c101 * xd) * (1-yd) + (c011 * (1-xd) + c111 * xd) * yd) * zd
+    return result
 
 def generate_acc_dis_time(ssi_fname,
     subdomain_origin, subdomain_xyz_len,
@@ -544,6 +595,11 @@ def generate_acc_dis_time(ssi_fname,
         print('ESSI max x, y, z: ', essi_x0+essi_x_len_max, essi_y0+essi_y_len_max, essi_z0+essi_z_len_max)
         print(' ')
         print('Generate output file with timesteps between', start_ts, 'and', end_ts, 'with step interval', tstep, 'in', output_format, 'format')
+    if mpi_rank == 0 and tstep > 1:
+        # [PY-8] downsampling summary. No anti-alias filter is applied, so the
+        #   ESSI motions must have no content above the new Nyquist frequency.
+        print('Downsampling in time: keeping every {} ESSI step(s) -> {} of {} steps, dt = {:.8g} s, Nyquist = {:.2f} Hz (ESSI: {:.2f} Hz)'.format(
+            tstep, nsteps, end_ts - start_ts, dt, 0.5/dt, 0.5/essi_dt))
 
     # Convert user coordinate to sw4 coordinate, relative to ESSI domain (potentially a subset of SW4 domain)
     # user_x,user_y,user_z := coordinates in ESSI subdomain
@@ -560,8 +616,16 @@ def generate_acc_dis_time(ssi_fname,
         print('(%d, %d, %d)' % (user_essi_x[i], user_essi_y[i], user_essi_z[i]))
 
     # Plot
+    # [PY-9] CHANGED: plot at most ~50,000 nodes. Matplotlib needs minutes per
+    #   million 3D markers, and only rank 0 plots, so with millions of DRM nodes
+    #   (e.g. a DRM h of half the ESSI spacing) the other ranks sat waiting for
+    #   rank 0 at the first collective and the run looked hung.
     if mpi_rank == 0:
-        plot_coords(essi_x0, essi_y0, essi_z0, essi_h, essi_nx, essi_ny, essi_nz, user_essi_x, user_essi_y, user_essi_z, save_path)
+        plot_stride = max(1, len(user_essi_x) // 50000)
+        if plot_stride > 1:
+            print('Plotting 1 in every {} of {} nodes'.format(plot_stride, len(user_essi_x)))
+        plot_coords(essi_x0, essi_y0, essi_z0, essi_h, essi_nx, essi_ny, essi_nz,
+                    user_essi_x[::plot_stride], user_essi_y[::plot_stride], user_essi_z[::plot_stride], save_path)
 
     if plot_only:
         if mpi_rank == 0:
@@ -592,17 +656,26 @@ def generate_acc_dis_time(ssi_fname,
     # Check if we actually need interpolation
     # ghost_cell = 0
     # do_interp = True
-    do_interp = False
-    for nid in range(0, n_coord):
-        if user_essi_x[nid] % essi_h != 0 or user_essi_y[nid] % essi_h != 0 or user_essi_z[nid] % essi_h != 0:
-            do_interp = True
-            # ghost_cell = 1
-            break    
+    # [PY-6] CHANGED: test the grid index relative to the ESSI origin, with a
+    #   tolerance. The old test (user_essi_x % essi_h != 0) used the absolute
+    #   coordinate, which is wrong when the ESSI origin is not a multiple of h,
+    #   and flagged rounding noise such as 1237.4999999 as off-grid.
+    grid_tol = 1e-6
+    off_grid = (np.abs(coord_x - np.rint(coord_x)) > grid_tol) | \
+               (np.abs(coord_y - np.rint(coord_y)) > grid_tol) | \
+               (np.abs(coord_z - np.rint(coord_z)) > grid_tol)
+    do_interp = bool(np.any(off_grid))
+    if do_interp:
+        nmax_xyz = (essi_nx, essi_ny, essi_nz)
+    else:
+        # all nodes are on the grid: snap the indices so that int() below can
+        # never turn 159.99999999 into 159 (chunk ids, keys and reads all use these)
+        coord_x, coord_y, coord_z = np.rint(coord_x), np.rint(coord_y), np.rint(coord_z)
     if mpi_rank == 0:
       if do_interp:
-        print('Use spline interpolation.')
+        print('Use trilinear interpolation ({} of {} nodes are off the ESSI grid).'.format(int(np.sum(off_grid)), n_coord))
       else:
-        print('No spline interpolation is needed.')
+        print('No interpolation is needed (all nodes are on the ESSI grid).')
     
     #for i in range(0, len(user_essi_x)):
     #    print('(%.2f, %.2f, %.2f)' % (coord_x[i], coord_y[i], coord_z[i]))
@@ -695,9 +768,9 @@ def generate_acc_dis_time(ssi_fname,
             # if coord_x[i] % 1 != 0 or coord_y[i] % 1 != 0 or coord_z[i] % 1 != 0:
             if do_interp:
                 # Linear interpolation requires 8 neighbours' data
-                nadded, add_cids_dict = allocate_neighbor_coords_8(read_coords_vel_0, coord_x[i], coord_y[i], coord_z[i], essi_nt, chk_x, chk_y, chk_z, nchk_x, nchk_y, nchk_z)
-                nadded, add_cids_dict = allocate_neighbor_coords_8(read_coords_vel_1, coord_x[i], coord_y[i], coord_z[i], essi_nt, chk_x, chk_y, chk_z, nchk_x, nchk_y, nchk_z)
-                nadded, add_cids_dict = allocate_neighbor_coords_8(read_coords_vel_2, coord_x[i], coord_y[i], coord_z[i], essi_nt, chk_x, chk_y, chk_z, nchk_x, nchk_y, nchk_z)
+                nadded, add_cids_dict = allocate_neighbor_coords_8(read_coords_vel_0, coord_x[i], coord_y[i], coord_z[i], essi_nt, chk_x, chk_y, chk_z, nchk_x, nchk_y, nchk_z, nmax_xyz)  # [PY-4]
+                nadded, add_cids_dict = allocate_neighbor_coords_8(read_coords_vel_1, coord_x[i], coord_y[i], coord_z[i], essi_nt, chk_x, chk_y, chk_z, nchk_x, nchk_y, nchk_z, nmax_xyz)  # [PY-4]
+                nadded, add_cids_dict = allocate_neighbor_coords_8(read_coords_vel_2, coord_x[i], coord_y[i], coord_z[i], essi_nt, chk_x, chk_y, chk_z, nchk_x, nchk_y, nchk_z, nmax_xyz)  # [PY-4]
 
                 # print('Rank', mpi_rank, ': add_cids_dict =', add_cids_dict)
 
@@ -748,26 +821,42 @@ def generate_acc_dis_time(ssi_fname,
         read_hdf5_by_chunk(ssi_fname, read_coords_vel_1, 1, my_cids_dict, chk_x, chk_y, chk_z, nchk_x, nchk_y, nchk_z, chk_t, mpi_rank, verbose)
         read_hdf5_by_chunk(ssi_fname, read_coords_vel_2, 2, my_cids_dict, chk_x, chk_y, chk_z, nchk_x, nchk_y, nchk_z, chk_t, mpi_rank, verbose)
 
+    # [PY-8] Downsample in time right after reading: keep steps
+    #   start_ts, start_ts+tstep, ... < end_ts. Done per series (with .copy() so
+    #   the full-length array is freed), so the output buffer below and any
+    #   interpolation only work on nsteps samples.
+    tslice = slice(tsteprange.start, tsteprange.stop, tsteprange.step)
+    for read_coords in (read_coords_vel_0, read_coords_vel_1, read_coords_vel_2):
+        for key in read_coords:
+            read_coords[key] = read_coords[key][tslice].copy()
+
     # Calculate the offset from the global array
     my_offset = 0
     for i in range(0, mpi_rank):
         my_offset += all_ncoord[i]
 
-    output_acc_all = np.zeros((my_ncoord[0]*3, essi_nt), dtype='f4')
-    output_dis_all = np.zeros((my_ncoord[0]*3, essi_nt), dtype='f4')   
-    output_vel_all = np.zeros((my_ncoord[0]*3, essi_nt), dtype='f4')    
+    # [PY-8] sized to the downsampled length (series were trimmed above)
+    output_acc_all = np.zeros((my_ncoord[0]*3, nsteps), dtype='f4')
+    output_dis_all = np.zeros((my_ncoord[0]*3, nsteps), dtype='f4')
+    output_vel_all = np.zeros((my_ncoord[0]*3, nsteps), dtype='f4')
     
     # Iterate over all coordinates, all the vel data (vel_0 to 2) in read_coords_vel_012 dict for this rank
-    # no interpolation needed, just go through all coordinates' data and convert to acc and dis
+    # [PY-7] RESTORED: with off-grid nodes, interpolate from the 8 neighbours that
+    #   were read (previously the lower-corner value was copied and the other 7
+    #   neighbours were read but unused). On-grid nodes copy their own series.
     iter_count = 0 
     print('Rank', mpi_rank, 'size of read_coords_vel_0:', len(read_coords_vel_0))
     for iter_count in range(0, my_ncoord[0]):
         x = my_converted_coordinates[iter_count, 0]
         y = my_converted_coordinates[iter_count, 1]
         z = my_converted_coordinates[iter_count, 2]
-        coord_str = coord_to_str_3d(int(x), int(y), int(z))
 
-        if gen_vel:
+        if gen_vel and do_interp:
+            output_vel_all[iter_count*3+0, :] = linear_interp(read_coords_vel_0, x, y, z, nmax_xyz)
+            output_vel_all[iter_count*3+1, :] = linear_interp(read_coords_vel_1, x, y, z, nmax_xyz)
+            output_vel_all[iter_count*3+2, :] = linear_interp(read_coords_vel_2, x, y, z, nmax_xyz)
+        elif gen_vel:
+            coord_str = coord_to_str_3d(int(x), int(y), int(z))   # exact: indices were snapped in [PY-6]
             output_vel_all[iter_count*3+0, :] = read_coords_vel_0[coord_str][:]
             output_vel_all[iter_count*3+1, :] = read_coords_vel_1[coord_str][:]
             output_vel_all[iter_count*3+2, :] = read_coords_vel_2[coord_str][:]
@@ -789,7 +878,7 @@ def generate_acc_dis_time(ssi_fname,
                 essi_lonlat, essi_az, subdomain_origin, subdomain_xyz_len)
             if my_ncoord[0] > 0:
                 write_to_hdf5_range_2d(output_fname, '/', 'xyz', my_user_coordinates, my_offset, (my_offset+my_ncoord[0]))
-                write_to_hdf5_range(output_fname, '/', 'node_motion_data', output_vel_all[:,tsteprange], my_offset*3, (my_offset+my_ncoord[0])*3)
+                write_to_hdf5_range(output_fname, '/', 'node_motion_data', output_vel_all, my_offset*3, (my_offset+my_ncoord[0])*3)  # [PY-8]
             if mpi_size > 1:
                 comm.send(my_ncoord, dest=1, tag=11)
         else:
@@ -798,7 +887,7 @@ def generate_acc_dis_time(ssi_fname,
                 if verbose:
                     print('Rank', mpi_rank, 'start to write data')
                 write_to_hdf5_range_2d(output_fname, '/', 'xyz', my_user_coordinates, my_offset, (my_offset+my_ncoord[0]))
-                write_to_hdf5_range(output_fname, '/', 'node_motion_data', output_vel_all[:,tsteprange], my_offset*3, (my_offset+my_ncoord[0])*3)
+                write_to_hdf5_range(output_fname, '/', 'node_motion_data', output_vel_all, my_offset*3, (my_offset+my_ncoord[0])*3)  # [PY-8]
             if mpi_rank != mpi_size-1:
                 comm.send(my_ncoord, dest=mpi_rank+1, tag=11) 
     else:
@@ -992,7 +1081,15 @@ if __name__ == "__main__":
     parser.add_argument("-s", "--savepath", help="full path for saving the result files", default="")
     parser.add_argument("-d", "--drm", help="full path to the CSV file with DRM boundary information", default="")
     parser.add_argument("-e", "--essi", help="full path to the SW4 ESSI output file (required)", default="")
+    # [PY-8] downsample the output time series by keeping every n-th ESSI time step
+    parser.add_argument("-t", "--tstep", help="keep every n-th ESSI time step in the output (default 1 = all steps)", type=int, default=1)
+    # [PY-3] NEW: time-chunk length of node_motion_data (match SW4's DRM window=)
+    parser.add_argument("-c", "--chunktime", help="time samples per HDF5 chunk of node_motion_data (default 512)", type=int, default=512)
     args = parser.parse_args()
+    if args.chunktime < 1:
+        print('Error: --chunktime must be >= 1, exit...')
+        exit(0)
+    DRM_CHUNK_TIME = args.chunktime
     
     if args.verbose:
         verbose=True
@@ -1005,6 +1102,10 @@ if __name__ == "__main__":
         use_drm=True
     if args.essi:
         ssi_fname=args.essi
+    if args.tstep < 1:
+        print('Error: --tstep must be an integer >= 1, got', args.tstep)
+        exit(1)
+    tstep = args.tstep
     
     comm = MPI.COMM_WORLD
     mpi_size = comm.Get_size()
