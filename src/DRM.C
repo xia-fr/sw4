@@ -42,6 +42,9 @@
 #include <cstring>
 #include <iostream>
 #include <fstream>
+// [DRM-9] added for std::vector / std::min used in readDRMHDF5_data
+#include <vector>
+#include <algorithm>
 
 #define SQR(x) ((x)*(x))
 
@@ -553,197 +556,225 @@ void EW::readDRMHDF5_data( char* buffer )
   stime = MPI_Wtime();
 
 #ifdef USE_HDF5
-  string gname;
+  // ======================================================================
+  // [DRM-1] REWRITTEN: per-rank, batched reading of node_motion_data.
+  //   OLD: reader ranks malloc'd the ENTIRE node_motion_data dataset
+  //        (3929724 x 19403 doubles = ~610 GB), read it all, MPI_Bcast it to
+  //        the other ranks (non-reader ranks also malloc'd the full size),
+  //        and EVERY rank then constructed a DRMSource for EVERY node and
+  //        threw away the ones it did not own.
+  //   NEW: every rank
+  //        (a) reads only the small xyz table (~31 MB),
+  //        (b) works out which DRM nodes lie in its own patch   [DRM-4],
+  //        (c) reads only those rows of node_motion_data, in batches [DRM-6],
+  //        (d) builds DRMSource objects only for those nodes.
+  //   There is no broadcast and no reader/node communicator any more.
+  //   REQUIRES [DRMS-1] in DRMSource.C (removal of the per-source
+  //   MPI_Allreduce); otherwise ranks would no longer make matching
+  //   collective calls and the run would hang.
+  // ======================================================================
+  const int ndims = 2;
   int status;
-  bool myPoint;
+  hid_t fid, fapl;
+  hid_t xyz_set, xyz_space;
+  hid_t node_set, node_space;
+  hsize_t xyz_shape[2], node_shape[2];
+  float_sw4 *xyz_data;
 
-  // hid_t := HDF5 library signed integer handle for HDF5 objects
-  hid_t fid, fapl, dset;
+  // [DRM-2] float_sw4 is normally double; pick the matching HDF5 memory type
+  // instead of hard-coding NATIVE_DOUBLE (HDF5 converts from the on-disk type).
+  const hid_t h5type = (sizeof(float_sw4) == 8) ? H5T_NATIVE_DOUBLE : H5T_NATIVE_FLOAT;
 
-  int ndims = 2;
-  float_sw4 *xyz_data, *node_data;
-  hid_t xyz_set, xyz_space, xyz_memspace;
-  hsize_t xyz_shape[ndims];
-  hsize_t xyz_offset[ndims], xyz_count[ndims];
-
-  hid_t node_set, node_space, node_memspace;
-  hsize_t node_shape[ndims];
-  hsize_t node_offset[ndims], node_count[ndims];
-
-  // Setup for parallel n readers
-  int world_rank, world_size;
-  MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
-  MPI_Comm_size(MPI_COMM_WORLD, &world_size);
-  int nreader = m_nwriters;
-  if (nreader <= 0) 
-      nreader = 1;
-  if (nreader > world_size)
-      nreader = world_size;
-  
-  if ( world_size % nreader != 0){
-    printf("Warning: %i processes not evenly divided by %i readers", 
-      world_size, nreader);
+  // [DRM-2] Every rank opens the file (collective open over MPI_COMM_WORLD)
+  // and then does its own independent reads (default transfer property).
+  // The access property list is now closed (it was leaked before).
+  fapl = H5Pcreate(H5P_FILE_ACCESS);
+  H5Pset_fapl_mpio(fapl, MPI_COMM_WORLD, MPI_INFO_NULL);
+  fid = H5Fopen(dfile, H5F_ACC_RDONLY, fapl);
+  H5Pclose(fapl);
+  if (fid < 0) {
+    cerr << "DRM HDF5 file " << dfile << " not found" << endl;
+    MPI_Abort( MPI_COMM_WORLD, 1 );
   }
-  if ( world_rank == 0 )
-      printf("> Using %i readers to access data\n", nreader);
+  if ( proc_zero() )
+    printf("> Opened DRM file '%s'\n", dfile);
 
-  int read_color = world_rank % (world_size / nreader) == 0 ? 0 : 1;
-  int node_color = world_rank / (world_size / nreader);
-  int read_rank, read_size;
-  MPI_Comm read_comm, node_comm;
-  MPI_Comm_split(MPI_COMM_WORLD, read_color, world_rank, &read_comm);
-  MPI_Comm_split(MPI_COMM_WORLD, node_color, world_rank, &node_comm);
-  MPI_Comm_rank(MPI_COMM_WORLD, &read_rank);
-  MPI_Comm_size(MPI_COMM_WORLD, &read_size);
-  // end setup for parallel n readers
-  
-  // Only color 0 reads data, then broadcast to all other processes
-  if (read_color == 0) {
-    // Open file
-    stime = MPI_Wtime();
-    fapl = H5Pcreate(H5P_FILE_ACCESS);
-    H5Pset_fapl_mpio(fapl, read_comm, MPI_INFO_NULL);
-    fid = H5Fopen(dfile, H5F_ACC_RDONLY, fapl);
-
-    // Printing diagnostics
-    if (fid <= 0) {
-      cerr << "DRM HDF5 file " << dfile << " not found" << endl;
-      MPI_Abort( MPI_COMM_WORLD, 1 );
-    }
-    if ( proc_zero() )
-      printf("> Opened DRM file '%s'\n", dfile);
-
-    // Grab the dataset containing the node motion data
-    gname = "node_motion_data";
-    node_set = H5Dopen(fid, gname.c_str(), H5P_DEFAULT);
-
-    // Get the dataspace and shape of the data
-    node_space = H5Dget_space(node_set); 
-    status = H5Sget_simple_extent_dims(node_space, node_shape, NULL);
-    if ( proc_zero() ) 
-      printf("> Group 'node_motion_data': dimensions %d x %d \n", node_shape[0], node_shape[1]);
-    node_count[0] = node_shape[0]; // for the 3 components of motion
-    node_count[1] = node_shape[1];
-    node_offset[0] = 0;
-    node_offset[1] = 0;
-
-    // Define the memory dataspace (same size as selection)
-    node_memspace = H5Screate_simple(ndims, node_count, NULL);
-
-    // Grab the dataset containing the xyz coordinate data
-    gname = "xyz";
-    xyz_set = H5Dopen(fid, gname.c_str(), H5P_DEFAULT);
-    
-    // Get the dataspace and shape of the data
-    xyz_space = H5Dget_space(xyz_set); 
-    status = H5Sget_simple_extent_dims(xyz_space, xyz_shape, NULL);
-    if ( proc_zero() ) 
-      printf("> Group 'xyz': dimensions %d x %d \n", xyz_shape[0], xyz_shape[1]);
+  // [DRM-3] Dataset-open and shape checks (the old code did not check
+  // H5Dopen for either dataset).
+  node_set = H5Dopen(fid, "node_motion_data", H5P_DEFAULT);
+  xyz_set  = H5Dopen(fid, "xyz", H5P_DEFAULT);
+  if (node_set < 0 || xyz_set < 0) {
+    cerr << "Error: DRM HDF5 file is missing 'node_motion_data' and/or 'xyz'" << endl;
+    MPI_Abort( MPI_COMM_WORLD, 1 );
+  }
+  node_space = H5Dget_space(node_set);
+  xyz_space  = H5Dget_space(xyz_set);
+  status = H5Sget_simple_extent_dims(node_space, node_shape, NULL);
+  ASSERT(status == ndims);
+  status = H5Sget_simple_extent_dims(xyz_space, xyz_shape, NULL);
+  ASSERT(status == ndims);
+  if ( proc_zero() ) {
+    // [DRM-8] hsize_t printed with %llu (was %d)
+    printf("> Group 'node_motion_data': dimensions %llu x %llu \n",
+           (unsigned long long)node_shape[0], (unsigned long long)node_shape[1]);
+    printf("> Group 'xyz': dimensions %llu x %llu \n",
+           (unsigned long long)xyz_shape[0], (unsigned long long)xyz_shape[1]);
     fflush(stdout);
-    xyz_count[0] = xyz_shape[0];
-    xyz_count[1] = xyz_shape[1];
-    xyz_offset[0] = 0;
-    xyz_offset[1] = 0;
-
-    // Define the memory dataspace (same size as selection)
-    xyz_memspace = H5Screate_simple(ndims, xyz_count, NULL);
-
-    // Allocate temporary arrays to hold the data once it has been read
-    // - index using row major syntax: data[i][j] = data[i*data_shape[1] + j]
-    xyz_data = (float_sw4 *)malloc(xyz_shape[0]*xyz_shape[1]*sizeof(float_sw4));
-    node_data = (float_sw4 *)malloc(node_shape[0]*node_shape[1]*sizeof(float_sw4));
-
-    // Select the hyperslab and read data from the selection
-    status = H5Sselect_hyperslab(xyz_space, H5S_SELECT_SET, xyz_offset, NULL, xyz_count, NULL);
-    ASSERT(status >= 0);
-    status = H5Dread(xyz_set, H5T_NATIVE_DOUBLE, xyz_memspace, xyz_space, H5P_DEFAULT, xyz_data);
-    ASSERT(status >= 0);
-
-    // Read the node motion data
-    status = H5Sselect_hyperslab(node_space, H5S_SELECT_SET, node_offset, NULL, node_count, NULL);
-    ASSERT(status >= 0);
-    status = H5Dread(node_set, H5T_NATIVE_DOUBLE, node_memspace, node_space, H5P_DEFAULT, node_data);
-    ASSERT(status >= 0);
-
-    // Close resources
-    H5Sclose(xyz_memspace);
-    H5Sclose(xyz_space);
-    H5Dclose(xyz_set);
-    H5Sclose(node_memspace);
-    H5Sclose(node_space);
-    H5Dclose(node_set);
-    H5Fclose(fid);
   }
-  // Broadcast data to the other processors
-  MPI_Bcast(&node_shape, ndims, MPI_DOUBLE, 0, node_comm);
-  MPI_Bcast(&xyz_shape, ndims, MPI_DOUBLE, 0, node_comm);
-
-  // Allocate data for the processors that weren't reading
-  if (read_color != 0) {
-    xyz_data = (float_sw4 *)malloc(xyz_shape[0]*xyz_shape[1]*sizeof(float_sw4));
-    node_data = (float_sw4 *)malloc(node_shape[0]*node_shape[1]*sizeof(float_sw4));
+  if (xyz_shape[1] != 3 || node_shape[0] != 3*xyz_shape[0]) {
+    cerr << "Error: DRM HDF5 shape mismatch: expected xyz = N x 3 and "
+         << "node_motion_data = 3N x nt" << endl;
+    MPI_Abort( MPI_COMM_WORLD, 1 );
   }
+  const hsize_t nnodes = xyz_shape[0];   // number of DRM nodes
+  const hsize_t nt     = node_shape[1];  // number of time steps
 
-  // Broadcast node motion data
-  MPI_Bcast(xyz_data, xyz_shape[0]*xyz_shape[1], m_mpifloat, 0, node_comm);
-  MPI_Bcast(node_data, node_shape[0]*node_shape[1], m_mpifloat, 0, node_comm);
+  // Every rank reads the whole xyz table (small).
+  xyz_data = (float_sw4 *)malloc(nnodes*xyz_shape[1]*sizeof(float_sw4));
+  status = H5Dread(xyz_set, h5type, H5S_ALL, H5S_ALL, H5P_DEFAULT, xyz_data);
+  ASSERT(status >= 0);
+  H5Dclose(xyz_set);
+  H5Sclose(xyz_space);
 
-  MPI_Comm_free(&node_comm);
-  MPI_Comm_free(&read_comm);
+  // The xyz coordinates of the drm nodes are saved with respect to the DRM
+  // boundary origin, so we offset them into this simulation's coordinate frame
+  // (same offset as the original code applied to x and y).
+  const float_sw4 xyoff = m_supergrid_width + 6*mGridSize[0];
 
+  // ----------------------------------------------------------------------
+  // [DRM-4] Ownership scan: which DRM nodes lie in this rank's patch?
+  //   Uses only positions (no time series). The test is the same one
+  //   DRMSource::compute_grid_point uses to set myPoint().
+  //   ASSUMPTION: computeNearestGridPoint2 is purely local (no MPI calls),
+  //   which matches how DRMSource::compute_grid_point uses it.
+  // ----------------------------------------------------------------------
+  std::vector<hsize_t> mine;
+  for ( hsize_t ix = 0; ix < nnodes; ix++ ){
+    float_sw4 xs = xyz_data[ix*xyz_shape[1] + 0] + xyoff;
+    float_sw4 ys = xyz_data[ix*xyz_shape[1] + 1] + xyoff;
+    float_sw4 zs = xyz_data[ix*xyz_shape[1] + 2];
+    int ii, jj, kk, gg;
+    int success = computeNearestGridPoint2( ii, jj, kk, gg, xs, ys, zs );
+    if ( success && interior_point_in_proc(ii, jj, gg) )
+      mine.push_back(ix);
+  }
+  const size_t nloc = mine.size();
+
+  // [DRM-5] Diagnostics: ownership sanity check and memory estimate.
+  //   Each DRMSource stores 6*nt+1 spline coefficients per component, i.e.
+  //   about 6x the raw time series, which is the dominant memory cost.
+  {
+    unsigned long long nloc_ull = nloc, nsum = 0, nmax = 0;
+    MPI_Allreduce(&nloc_ull, &nsum, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(&nloc_ull, &nmax, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX, MPI_COMM_WORLD);
+    if ( proc_zero() ){
+      double bytes_per_node_src = 3.0*(6.0*(double)nt + 1.0)*sizeof(float_sw4);
+      printf("> DRM nodes owned: %llu of %llu total; busiest rank owns %llu\n",
+             nsum, (unsigned long long)nnodes, nmax);
+      printf("> Estimated DRM source storage: %.1f GB total, %.1f GB on the busiest rank\n",
+             nsum*bytes_per_node_src/1.0e9, nmax*bytes_per_node_src/1.0e9);
+      if ( nsum != (unsigned long long)nnodes )
+        printf("Warning: %llu DRM nodes are owned by no rank (outside the domain?) "
+               "or by more than one rank\n", (unsigned long long)nnodes - nsum);
+      fflush(stdout);
+    }
+  }
   etime1 = MPI_Wtime();
   if ( proc_zero() ){
-    printf("* Loaded %i DRM node motions, took %.8f seconds.\n", xyz_shape[0], etime1-stime);
-    printf("> Now generating DRM source objects...\n");
+    printf("* Located DRM nodes, took %.8f seconds.\n", etime1-stime);
+    printf("> Now reading DRM node motions and generating DRM source objects...\n");
     fflush(stdout);
   }
 
   // We set the number of time steps here while we have the information
   int e = 0;
   if (mTimeIsSet[e])
-    mNumberOfTimeSteps[e] = node_shape[1];
+    mNumberOfTimeSteps[e] = nt;
 
-  // if ( m_myRank == 1 ){
-  //   int i0=1500;
-  //   printf("[x0]: %.4f\n", xyz_data[(i0+0)*xyz_shape[1] + 0]);
-  //   printf("[y0]: %.4f\n", xyz_data[(i0+0)*xyz_shape[1] + 1]);
-  //   printf("[z0]: %.4f\n", xyz_data[(i0+0)*xyz_shape[1] + 2]);
-  //   for(int ii=0;ii<39;ii++){
-  //     printf("[%i]: %.8e\n", ii+1, node_data[(i0*3+1)*node_shape[1] + ii]);
-  //   }
-  // }
-  
-  float_sw4 x = 0.0, y = 0.0, z = 0.0;
-  DRMSource* drmsrcPtr;
-  float_sw4* par;
-  for ( int ix=0; ix<xyz_shape[0]; ix++ ){
-    // The xyz coordinates of the drm nodes are saved with respect to the DRM boundary origin,
-    // so we have to offset them to be in the proper coordinate frame.
-    x = xyz_data[ix*xyz_shape[1] + 0] + m_supergrid_width + 6*mGridSize[0];
-    y = xyz_data[ix*xyz_shape[1] + 1] + m_supergrid_width + 6*mGridSize[0];
-    z = xyz_data[ix*xyz_shape[1] + 2];
-  
-    // Create new DRM source and add it to list of source terms
-    for ( int comp=0; comp<3; comp++){
-      par = &node_data[(ix*3+comp)*node_shape[1]];
-      drmsrcPtr = new DRMSource(this, x, y, z, comp+1,
-        par, node_shape[1], m_DRM_dt);
-      if (!drmsrcPtr->myPoint()){
-        delete drmsrcPtr;
-      } else { // We only save this source object if it belongs to the proc
-        m_DRMSources.push_back(drmsrcPtr);
+  // ----------------------------------------------------------------------
+  // [DRM-6] Batched read + build. Only a batch of rows (<= ~512 MB) is held
+  //   at once; DRMSource copies the series it is given (and then replaces it
+  //   with spline coefficients), so the batch buffer is reused immediately.
+  //   Within a batch, consecutive node indices are merged into one read.
+  //   Node ix occupies rows 3*ix .. 3*ix+2 of node_motion_data.
+  // ----------------------------------------------------------------------
+  const size_t DRM_READ_BATCH_BYTES = 512ULL*1024ULL*1024ULL;
+  const size_t bytes_per_node = 3*(size_t)nt*sizeof(float_sw4);
+  size_t batch_nodes = DRM_READ_BATCH_BYTES / bytes_per_node;
+  if (batch_nodes < 1)     batch_nodes = 1;
+  if (batch_nodes > nloc)  batch_nodes = nloc;
+
+  float_sw4* batch = NULL;
+  if (nloc > 0){
+    batch = (float_sw4 *)malloc(batch_nodes*bytes_per_node);
+    if (batch == NULL){
+      cerr << "Error: could not allocate DRM read buffer" << endl;
+      MPI_Abort( MPI_COMM_WORLD, 1 );
+    }
+    m_DRMSources.reserve(m_DRMSources.size() + 3*nloc);
+  }
+
+  for ( size_t b0 = 0; b0 < nloc; b0 += batch_nodes ){
+    size_t b1 = std::min(nloc, b0 + batch_nodes);
+
+    // read the rows for nodes mine[b0..b1-1]
+    size_t k = b0;
+    while ( k < b1 ){
+      size_t run = 1;
+      while ( k+run < b1 && mine[k+run] == mine[k] + run )
+        run++;
+      hsize_t start[2] = { 3*mine[k], 0 };
+      hsize_t count[2] = { 3*(hsize_t)run, nt };
+      status = H5Sselect_hyperslab(node_space, H5S_SELECT_SET, start, NULL, count, NULL);
+      ASSERT(status >= 0);
+      hid_t mspace = H5Screate_simple(ndims, count, NULL);
+      status = H5Dread(node_set, h5type, mspace, node_space, H5P_DEFAULT,
+                       batch + (k-b0)*3*(size_t)nt);
+      ASSERT(status >= 0);
+      H5Sclose(mspace);
+      k += run;
+    }
+
+    // build the DRM sources for this batch
+    for ( size_t kk2 = b0; kk2 < b1; kk2++ ){
+      hsize_t ix = mine[kk2];
+      float_sw4 x = xyz_data[ix*xyz_shape[1] + 0] + xyoff;
+      float_sw4 y = xyz_data[ix*xyz_shape[1] + 1] + xyoff;
+      float_sw4 z = xyz_data[ix*xyz_shape[1] + 2];
+      for ( int comp = 0; comp < 3; comp++ ){
+        float_sw4* par = &batch[((kk2-b0)*3 + comp)*(size_t)nt];
+        DRMSource* drmsrcPtr = new DRMSource(this, x, y, z, comp+1,
+          par, (int)nt, m_DRM_dt);
+        if (!drmsrcPtr->myPoint()){
+          delete drmsrcPtr;   // should not happen after [DRM-4]; kept as a guard
+        } else {
+          m_DRMSources.push_back(drmsrcPtr);
+        }
       }
     }
   }
 
-  delete[] xyz_data;
-  delete[] node_data;
+  // [DRM-7] The old code's MPI_Bcast calls are gone. They had three problems:
+  //   * node_shape/xyz_shape (hsize_t) were broadcast as MPI_DOUBLE;
+  //   * the node_motion_data broadcast count node_shape[0]*node_shape[1]
+  //     (~7.6e10) does not fit in the int count argument of MPI_Bcast;
+  //   * MPI_Comm_rank/size for read_rank/read_size were called on
+  //     MPI_COMM_WORLD instead of read_comm (and the values were unused).
+  //   Buffers are now released with free() to match malloc() (the old code
+  //   used delete[] on malloc'd memory).
+  if (batch != NULL) free(batch);
+  free(xyz_data);
+  H5Sclose(node_space);
+  H5Dclose(node_set);
+  H5Fclose(fid);
 
   MPI_Barrier(MPI_COMM_WORLD);
   etime2 = MPI_Wtime();
   if ( proc_zero() ){
-    printf("* Generated DRM source objects, took %.8f seconds.\n", xyz_shape[0], etime2-etime1);
-    printf("* Total time to process DRM node motions: %.8f seconds.\n\n", xyz_shape[0], etime2-stime);
+    // [DRM-8] removed stray extra printf arguments (xyz_shape[0] was passed
+    // with no matching format specifier)
+    printf("* Generated DRM source objects, took %.8f seconds.\n", etime2-etime1);
+    printf("* Total time to process DRM node motions: %.8f seconds.\n\n", etime2-stime);
     fflush(stdout);
   }
 #endif // USE_HDF5

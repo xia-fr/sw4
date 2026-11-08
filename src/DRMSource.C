@@ -59,7 +59,12 @@ DRMSource::DRMSource(EW *a_ew,
   mPar = new float_sw4[mNpts + 3];
   mPar[0] = 0.0; // mPar[0] holds the t0 value (assumed to be 0 by default)
   mPar[1] = 0.0; // this is the value of the time series at t = t0
-  for( int i = 0 ; i < mNpts+1; i++ )
+  // [DRMS-2] BUG FIX: the loop bound was mNpts+1, which reads pars[mNpts], one element
+  //   past the end of the caller's series (the first value of the NEXT series, or past
+  //   the end of the buffer for the very last one). That extra value was stored in
+  //   mPar[mNpts+2], which Qspline never reads, so results were unaffected, but it is an
+  //   out-of-bounds read. Now copies exactly the mNpts given values.
+  for( int i = 0 ; i < mNpts; i++ )
     mPar[i+2] = pars[i]; // Save the given time series
   mNpts = mNpts+1;
 
@@ -85,6 +90,10 @@ DRMSource::DRMSource(EW *a_ew,
 DRMSource::DRMSource()
 {
    mNpts = 0;
+   // [DRMS-3] BUG FIX: mPar (and m_myPoint) were left uninitialised, so the destructor's
+   //   delete[] mPar was undefined behaviour for default-constructed objects.
+   mPar = NULL;
+   m_myPoint = false;
 }
 
 //-----------------------------------------------------------------------
@@ -167,20 +176,26 @@ void DRMSource::compute_grid_point( EW* a_ew )
   int success = a_ew->computeNearestGridPoint2( i, j, k, g, mX0, mY0, mZ0 );
   m_myPoint = success && a_ew->interior_point_in_proc(i, j, g);
 
-  int inds[4]={-9999,-9999,-9999,-9999}; // if this is not my point, i0,j0,k0=-9999
+  // [DRMS-1] REQUIRED CHANGE: the MPI_Allreduce that used to be here is removed.
+  //   It was a collective over m_1d_communicator executed once per DRMSource, so every rank
+  //   had to construct every source in the same order (3.9M Allreduces, each preceded by a
+  //   full spline fit on every rank, only for non-owners to delete the object afterwards).
+  //   readDRMHDF5_data now constructs sources only on the rank that owns the node [DRM-1],
+  //   so keeping a collective here would hang. The owner already knows its own indices;
+  //   on a non-owner (which never keeps the object) they are set to -9999.
+  //   CHECK: grep the rest of SW4 for other 'new DRMSource' call sites that might rely on
+  //   the indices being broadcast to non-owning ranks.
   if( m_myPoint )
   {
-    inds[0] = i;
-    inds[1] = j;
-    inds[2] = k;
-    inds[3] = g;
+    m_i0 = i;
+    m_j0 = j;
+    m_k0 = k;
+    m_grid = g;
   }
-  int indsg[4]={0,0,0,0};
-  MPI_Allreduce( inds, indsg, 4, MPI_INT, MPI_MAX, a_ew->m_1d_communicator );
-  m_i0 = indsg[0];
-  m_j0 = indsg[1];
-  m_k0 = indsg[2];
-  m_grid = indsg[3];
+  else
+  {
+    m_i0 = m_j0 = m_k0 = m_grid = -9999;
+  }
 
   // if ( (mX0 == 2000.0) && (mY0 == 2000.0) && (mZ0 == 1000.00) && mComp == 1 ){
   //   int rank = a_ew->getRank();
