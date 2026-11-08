@@ -39,49 +39,25 @@
 using namespace std;
 
 //-----------------------------------------------------------------------
-// Constructor,
+// [SW-2] CHANGED constructor.
 //  x0, y0, z0 : float_sw4 : The cartesian coordinate location of this source.
-//  comp : float_sw4 : The component this source represents. 1:ux, 2:uy, 3:uz.
+//  comp : int : The component this source represents. 1:ux, 2:uy, 3:uz.
+//  a_nSamples : number of samples per series in node_motion_data (nt).
+//  dt : sample spacing of the series.
 //
-//  pars : pars[1],..pars[npts] should contain the discrete function on a uniform
-//         grid with spacing dt=1/freq, and pars[0] is the first time, thus the 
-//         grid is t_k = pars[0] + dt*k, k=0,1,..,npts-1
+//  OLD: copied the whole series, prepended a zero sample (the "chopped-off 0th
+//       time step"), fitted one quintic spline over all nt+1 samples, and kept
+//       6*nt coefficients for the whole run.
+//  NEW: stores no data. The global sample sequence is still defined the same way,
+//       g[0] = 0 and g[m] = series[m-1] for m = 1..nt (mNpts = nt+1 samples,
+//       nt intervals), but coefficients are loaded per window by setWindow().
 //-----------------------------------------------------------------------
 DRMSource::DRMSource(EW *a_ew,
               float_sw4  x0, float_sw4  y0, float_sw4  z0, int comp,
-              float_sw4 *pars, int npts, float_sw4 dt):
-  mX0(x0), mY0(y0), mZ0(z0), mComp(comp), mNpts(npts), mDt(dt), m_myPoint(false)
+              int a_nSamples, float_sw4 dt):
+  mX0(x0), mY0(y0), mZ0(z0), mDt(dt), mT0(0.0), mPar(NULL),
+  mNpts(a_nSamples+1), mComp(comp), m_kOffset(0), m_nInt(0), m_myPoint(false)
 {
-  // We have to do some adjusting because in the process of exporting as a ssi file
-  // and then the extracting of node motions into an hdf5, a 0th time step gets
-  // chopped off somewhere which misaligns these node motions with the simulation
-  // by one. And we need the timing to match for the in-domain forces.
-  mPar = new float_sw4[mNpts + 3];
-  mPar[0] = 0.0; // mPar[0] holds the t0 value (assumed to be 0 by default)
-  mPar[1] = 0.0; // this is the value of the time series at t = t0
-  // [DRMS-2] BUG FIX: the loop bound was mNpts+1, which reads pars[mNpts], one element
-  //   past the end of the caller's series (the first value of the NEXT series, or past
-  //   the end of the buffer for the very last one). That extra value was stored in
-  //   mPar[mNpts+2], which Qspline never reads, so results were unaffected, but it is an
-  //   out-of-bounds read. Now copies exactly the mNpts given values.
-  for( int i = 0 ; i < mNpts; i++ )
-    mPar[i+2] = pars[i]; // Save the given time series
-  mNpts = mNpts+1;
-
-  // if ( (a_ew->getRank() == 5) && (mX0 == 2000.0) && (mY0 == 2000.0) && (mZ0 == 1000.00) && (mComp == 1) ){
-  //   printf("rank %i:\n", a_ew->getRank());
-  //   for(int ii=95;ii<105;ii++){
-  //     printf("[%i]: %.8e\n", ii, mPar[ii]);
-  //   }
-  // }
-
-  // Apply spline interpolation to the given time series
-  spline_interpolation();
-
-  // Correct source location for discrepancy between raw and smoothed topography
-  // also sets the ignore flag for sources that are above the topography
-  // correct_Z_level( a_ew ); 
-  
   // Compute the ijk grid indices and the corresponding grid g for this point
   compute_grid_point( a_ew );
 }
@@ -94,6 +70,9 @@ DRMSource::DRMSource()
    //   delete[] mPar was undefined behaviour for default-constructed objects.
    mPar = NULL;
    m_myPoint = false;
+   m_kOffset = 0;   // [SW-2]
+   m_nInt = 0;      // [SW-2]
+   mT0 = 0.0;       // [SW-2]
 }
 
 //-----------------------------------------------------------------------
@@ -111,21 +90,26 @@ int DRMSource::getComp() const {return mComp;}
 
 // Ostream return information function
 //-----------------------------------------------------------------------
-ostream& operator<<( ostream& output, const DRMSource& s ) 
+ostream& operator<<( ostream& output, const DRMSource& s )
 {
-  output << "DRM Location (X,Y,Z) = " << s.mX0 << "," << s.mY0 << "," << s.mZ0 << 
-    " at grid point " << s.m_i0 << " " << s.m_j0 << " " << s.m_k0 << 
+  output << "DRM Location (X,Y,Z) = " << s.mX0 << "," << s.mY0 << "," << s.mZ0 <<
+    " at grid point " << s.m_i0 << " " << s.m_j0 << " " << s.m_k0 <<
     " in grid no " << s.m_grid  << endl;
   output << "   Component: " << s.mComp << endl;
-  output << "   t0 = " << s.mPar[0] << " dt = " << s.mDt << " npts = " << s.mNpts << endl;
+  // [SW-2] mPar[0] no longer holds t0; print the window instead
+  output << "   t0 = " << s.mT0 << " dt = " << s.mDt << " npts = " << s.mNpts
+         << " window intervals = [" << s.m_kOffset << "," << s.m_kOffset+s.m_nInt << ")" << endl;
   return output;
 }
 
 // Returns the value of the source function at time t.
+// [SW-2] CHANGED: same interval index k and argument as before (same clamping),
+//   but k is translated into the current window. The caller (EW::DRMSourcesToUField)
+//   guarantees the window contains k; a miss is a logic error and aborts.
 //-----------------------------------------------------------------------
 float_sw4 DRMSource::getU( float_sw4 t, float_sw4 ewDt )
 {
-  float_sw4 tstart = mPar[0];
+  float_sw4 tstart = mT0;
   float_sw4 freq = 1/mDt;
   int k = static_cast<int>(floor((t-tstart)*freq));
 
@@ -139,31 +123,51 @@ float_sw4 DRMSource::getU( float_sw4 t, float_sw4 ewDt )
   }
 
   float_sw4 arg = (t-tstart)*freq-k; // (t-(tstart+k*dt))/dt
-  //std::cout <<  "t= " << t << " mNpts " << mNpts << " k= " << k << "arg = " << arg <<  std::endl;
-  return mPar[6*k+1] + mPar[2+6*k]*arg + mPar[3+6*k]*arg*arg + mPar[4+6*k]*arg*arg*arg +
-          mPar[5+6*k]*arg*arg*arg*arg + mPar[6+6*k]*arg*arg*arg*arg*arg; 
+
+  int kl = k - m_kOffset;   // [SW-2] index within the window
+  if( kl < 0 || kl >= m_nInt ){
+    cerr << "Error: DRMSource::getU interval " << k << " is outside the loaded window ["
+         << m_kOffset << "," << m_kOffset+m_nInt << ") at t=" << t << endl;
+    MPI_Abort( MPI_COMM_WORLD, 1 );
+  }
+  const float_sw4* c = &mPar[6*kl];
+  return c[0] + c[1]*arg + c[2]*arg*arg + c[3]*arg*arg*arg +
+         c[4]*arg*arg*arg*arg + c[5]*arg*arg*arg*arg*arg;
 }
 
-// Trimmed down version of spline_interpolation() from Source.C
+// [SW-2] NEW, replaces spline_interpolation().
+//   Fits the same quintic spline (Qspline, 'not-a-knot' ends) as before, but on
+//   the samples of one window plus overlap, and keeps only the coefficients of
+//   intervals [a_intStart, a_intEnd). Because the spline interpolates the samples
+//   exactly at every knot (and each interval ends exactly on the next sample),
+//   values at on-grid times are identical to the full-series spline up to rounding;
+//   the overlap only matters for off-grid times, where the windowed and global
+//   splines differ by an amount that decays quickly with distance from the window edge.
 //-----------------------------------------------------------------------
-int DRMSource::spline_interpolation( )
+void DRMSource::setWindow( const float_sw4* a_samples, int a_nSamp, int a_firstSample,
+                           int a_intStart, int a_intEnd )
 {
-  // Assume mPar[1], to mPar[npts] contain the function
-  // Assume mPar[0] is tstart.
-  // Compute the six spline coefficients for each interval and return in mPar[1],to mPar[6*(npts-1)]
-  Qspline quinticspline( mNpts, &mPar[1], mPar[0], mDt );
-  float_sw4 tstart = mPar[0];
-  delete[] mPar;
-
-  int mNpar = 6*(mNpts-1)+1;
-  mPar = new float_sw4[mNpar];
-  
-  mPar[0] = tstart;
+  // the fitted samples must cover every interval we keep
+  if( a_intStart < a_firstSample || a_intEnd > a_firstSample + a_nSamp - 1 || a_nSamp < 7 ){
+    cerr << "Error: DRMSource::setWindow bad window: samples [" << a_firstSample << ","
+         << a_firstSample+a_nSamp << ") intervals [" << a_intStart << "," << a_intEnd << ")" << endl;
+    MPI_Abort( MPI_COMM_WORLD, 1 );
+  }
+  // Qspline takes a non-const pointer but does not modify fun
+  Qspline quinticspline( a_nSamp, const_cast<float_sw4*>(a_samples),
+                         mT0 + a_firstSample*mDt, mDt );
   float_sw4* qsppt = quinticspline.get_polycof_ptr();
-  for( int i=0 ; i < 6*(mNpts-1) ; i++ )
-      mPar[i+1] = qsppt[i];
 
-  return 1;
+  int nInt = a_intEnd - a_intStart;
+  if( nInt != m_nInt ){
+    delete[] mPar;
+    mPar = new float_sw4[6*nInt];
+  }
+  int first = a_intStart - a_firstSample;   // first kept interval within the fit
+  for( int i = 0 ; i < 6*nInt ; i++ )
+    mPar[i] = qsppt[6*first + i];
+  m_kOffset = a_intStart;
+  m_nInt = nInt;
 }
 
 // From Source.C

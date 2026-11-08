@@ -239,6 +239,19 @@ float_sw4 m_DRM_xMin, m_DRM_xMax, m_DRM_yMin, m_DRM_yMax, m_DRM_zMax;
 int m_DRM_iMin, m_DRM_iMax, m_DRM_jMin, m_DRM_jMax, m_DRM_kMax;
 float_sw4 m_DRM_dt;
 vector<DRMSource*> m_DRMSources;
+
+// [SW-3] NEW: sliding time window for the DRM node motions (in DRM.C)
+void refreshDRMWindow( int a_kNeed );   // load the window containing global interval a_kNeed
+void closeDRMWindowFile();              // close this rank's handle on the DRM file (reopened lazily)
+int m_DRM_window;          // window length in time intervals; 0 = whole series in one window
+int m_DRM_overlap;         // extra samples fitted on each side of the window
+int m_DRM_nt;              // samples per series in node_motion_data
+int m_DRM_winStart;        // global intervals [m_DRM_winStart, m_DRM_winEnd) currently loaded
+int m_DRM_winEnd;
+std::string m_DRM_file;    // path to the DRM HDF5 file
+hid_t m_DRM_fid;           // per-rank, read-only handle; -1 when closed
+hid_t m_DRM_dset;          // node_motion_data dataset; -1 when closed
+std::vector<hsize_t> m_DRM_myNodes;  // file node index of each owned node; sources 3*k..3*k+2 belong to node k
 // END DRM FUNCTIONS AND VARIABLES
 
 void processEvent( char* buffer, int enr );

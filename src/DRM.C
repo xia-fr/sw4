@@ -155,6 +155,22 @@ void EW::processDRM(char* buffer)
       proj0 << " +scale=" << atof(token);
       use_geoprojection = true;
     }
+    // [SW-4] NEW DRM options: sliding time window for the node motions.
+    //   window=N  : number of time intervals kept in memory per source (0 = whole series)
+    //   overlap=M : extra samples fitted on each side of a window
+    else if( startswith("window=",token))
+    {
+      token += 7;
+      m_DRM_window = atoi(token);
+      CHECK_INPUT( m_DRM_window == 0 || m_DRM_window >= 8,
+                   "ERROR: DRM window must be 0 (whole series) or >= 8, not " << m_DRM_window );
+    }
+    else if( startswith("overlap=",token))
+    {
+      token += 8;
+      m_DRM_overlap = atoi(token);
+      CHECK_INPUT( m_DRM_overlap >= 0, "ERROR: DRM overlap must be >= 0, not " << m_DRM_overlap );
+    }
     else
     {
       badOption("DRM", token);
@@ -227,6 +243,9 @@ void EW::processDRM(char* buffer)
     }
     if (proc_zero())
         printf("> Computed DRM grid origin lat = %.8f, lon = %.8f\n", mLatOrigin, mLonOrigin);
+    if (proc_zero())  // [SW-4]
+        printf("> DRM time window = %d intervals (0 = whole series), overlap = %d samples\n",
+               m_DRM_window, m_DRM_overlap);
 
     if( mVerbose >= 1 && proc_zero() )
     {
@@ -348,7 +367,7 @@ void EW::readDRMHDF5_grid(
     gname = "grid_lon_lat";
     dset = H5Dopen(fid, gname.c_str(), H5P_DEFAULT);
     if (dset < 0) {
-      printf("Error with DRM HDF5 file, no '%s' dataset found!\n", gname);
+      printf("Error with DRM HDF5 file, no '%s' dataset found!\n", gname.c_str()); // [SW-9] BUG FIX: was passing std::string to %s
       MPI_Abort( MPI_COMM_WORLD, 1 );
     } else {
       ret = H5Dread(dset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, &templl);
@@ -365,7 +384,7 @@ void EW::readDRMHDF5_grid(
     gname = "drm_origin";
     dset = H5Dopen(fid, gname.c_str(), H5P_DEFAULT);
     if (dset < 0) {
-      printf("Error with DRM HDF5 file, no '%s' dataset found!\n", gname);
+      printf("Error with DRM HDF5 file, no '%s' dataset found!\n", gname.c_str()); // [SW-9] BUG FIX: was passing std::string to %s
       MPI_Abort( MPI_COMM_WORLD, 1 );
     } else {
       ret = H5Dread(dset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, &temp_orig);
@@ -381,7 +400,7 @@ void EW::readDRMHDF5_grid(
     gname = "drm_shape";
     dset = H5Dopen(fid, gname.c_str(), H5P_DEFAULT);
     if (dset < 0) {
-      printf("Error with DRM HDF5 file, no '%s' dataset found!\n", gname);
+      printf("Error with DRM HDF5 file, no '%s' dataset found!\n", gname.c_str()); // [SW-9] BUG FIX: was passing std::string to %s
       MPI_Abort( MPI_COMM_WORLD, 1 );
     } else {
       ret = H5Dread(dset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, &temp_shape);
@@ -566,8 +585,9 @@ void EW::readDRMHDF5_data( char* buffer )
   //   NEW: every rank
   //        (a) reads only the small xyz table (~31 MB),
   //        (b) works out which DRM nodes lie in its own patch   [DRM-4],
-  //        (c) reads only those rows of node_motion_data, in batches [DRM-6],
-  //        (d) builds DRMSource objects only for those nodes.
+  //        (c) builds DRMSource objects only for those nodes [SW-5],
+  //        (d) loads their time series one window at a time [SW-6]
+  //            (the earlier full-series batched read [DRM-6] is replaced).
   //   There is no broadcast and no reader/node communicator any more.
   //   REQUIRES [DRMS-1] in DRMSource.C (removal of the per-source
   //   MPI_Allreduce); otherwise ranks would no longer make matching
@@ -668,7 +688,9 @@ void EW::readDRMHDF5_data( char* buffer )
     MPI_Allreduce(&nloc_ull, &nsum, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(&nloc_ull, &nmax, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX, MPI_COMM_WORLD);
     if ( proc_zero() ){
-      double bytes_per_node_src = 3.0*(6.0*(double)nt + 1.0)*sizeof(float_sw4);
+      // [SW-5] estimate uses the window length, not the whole series
+      double nint_kept = (m_DRM_window > 0 && (hsize_t)m_DRM_window < nt) ? m_DRM_window : (double)nt;
+      double bytes_per_node_src = 3.0*(6.0*nint_kept)*sizeof(float_sw4);
       printf("> DRM nodes owned: %llu of %llu total; busiest rank owns %llu\n",
              nsum, (unsigned long long)nnodes, nmax);
       printf("> Estimated DRM source storage: %.1f GB total, %.1f GB on the busiest rank\n",
@@ -682,7 +704,7 @@ void EW::readDRMHDF5_data( char* buffer )
   etime1 = MPI_Wtime();
   if ( proc_zero() ){
     printf("* Located DRM nodes, took %.8f seconds.\n", etime1-stime);
-    printf("> Now reading DRM node motions and generating DRM source objects...\n");
+    printf("> Now generating DRM source objects and loading the first time window...\n");
     fflush(stdout);
   }
 
@@ -692,65 +714,36 @@ void EW::readDRMHDF5_data( char* buffer )
     mNumberOfTimeSteps[e] = nt;
 
   // ----------------------------------------------------------------------
-  // [DRM-6] Batched read + build. Only a batch of rows (<= ~512 MB) is held
-  //   at once; DRMSource copies the series it is given (and then replaces it
-  //   with spline coefficients), so the batch buffer is reused immediately.
-  //   Within a batch, consecutive node indices are merged into one read.
-  //   Node ix occupies rows 3*ix .. 3*ix+2 of node_motion_data.
+  // [SW-5] REPLACES the [DRM-6] full-series batched read.
+  //   Sources are created here WITHOUT data; this rank only records which file
+  //   nodes it owns. The time series are then loaded one window at a time by
+  //   refreshDRMWindow(), starting with the window that contains t = 0.
+  //   Node ix occupies rows 3*ix .. 3*ix+2 of node_motion_data, and the sources
+  //   are pushed in the same order (3 per node), which refreshDRMWindow relies on.
   // ----------------------------------------------------------------------
-  const size_t DRM_READ_BATCH_BYTES = 512ULL*1024ULL*1024ULL;
-  const size_t bytes_per_node = 3*(size_t)nt*sizeof(float_sw4);
-  size_t batch_nodes = DRM_READ_BATCH_BYTES / bytes_per_node;
-  if (batch_nodes < 1)     batch_nodes = 1;
-  if (batch_nodes > nloc)  batch_nodes = nloc;
-
-  float_sw4* batch = NULL;
-  if (nloc > 0){
-    batch = (float_sw4 *)malloc(batch_nodes*bytes_per_node);
-    if (batch == NULL){
-      cerr << "Error: could not allocate DRM read buffer" << endl;
-      MPI_Abort( MPI_COMM_WORLD, 1 );
-    }
-    m_DRMSources.reserve(m_DRMSources.size() + 3*nloc);
+  if ( nt < 6 ){
+    cerr << "Error: DRM node_motion_data has only " << nt << " samples (need >= 6)" << endl;
+    MPI_Abort( MPI_COMM_WORLD, 1 );
   }
+  m_DRM_nt   = (int)nt;
+  m_DRM_file = dfile;
+  m_DRM_myNodes.assign(mine.begin(), mine.end());
+  m_DRM_winStart = m_DRM_winEnd = 0;   // nothing loaded yet
 
-  for ( size_t b0 = 0; b0 < nloc; b0 += batch_nodes ){
-    size_t b1 = std::min(nloc, b0 + batch_nodes);
-
-    // read the rows for nodes mine[b0..b1-1]
-    size_t k = b0;
-    while ( k < b1 ){
-      size_t run = 1;
-      while ( k+run < b1 && mine[k+run] == mine[k] + run )
-        run++;
-      hsize_t start[2] = { 3*mine[k], 0 };
-      hsize_t count[2] = { 3*(hsize_t)run, nt };
-      status = H5Sselect_hyperslab(node_space, H5S_SELECT_SET, start, NULL, count, NULL);
-      ASSERT(status >= 0);
-      hid_t mspace = H5Screate_simple(ndims, count, NULL);
-      status = H5Dread(node_set, h5type, mspace, node_space, H5P_DEFAULT,
-                       batch + (k-b0)*3*(size_t)nt);
-      ASSERT(status >= 0);
-      H5Sclose(mspace);
-      k += run;
-    }
-
-    // build the DRM sources for this batch
-    for ( size_t kk2 = b0; kk2 < b1; kk2++ ){
-      hsize_t ix = mine[kk2];
-      float_sw4 x = xyz_data[ix*xyz_shape[1] + 0] + xyoff;
-      float_sw4 y = xyz_data[ix*xyz_shape[1] + 1] + xyoff;
-      float_sw4 z = xyz_data[ix*xyz_shape[1] + 2];
-      for ( int comp = 0; comp < 3; comp++ ){
-        float_sw4* par = &batch[((kk2-b0)*3 + comp)*(size_t)nt];
-        DRMSource* drmsrcPtr = new DRMSource(this, x, y, z, comp+1,
-          par, (int)nt, m_DRM_dt);
-        if (!drmsrcPtr->myPoint()){
-          delete drmsrcPtr;   // should not happen after [DRM-4]; kept as a guard
-        } else {
-          m_DRMSources.push_back(drmsrcPtr);
-        }
+  m_DRMSources.reserve(m_DRMSources.size() + 3*nloc);
+  for ( size_t kk2 = 0; kk2 < nloc; kk2++ ){
+    hsize_t ix = mine[kk2];
+    float_sw4 x = xyz_data[ix*xyz_shape[1] + 0] + xyoff;
+    float_sw4 y = xyz_data[ix*xyz_shape[1] + 1] + xyoff;
+    float_sw4 z = xyz_data[ix*xyz_shape[1] + 2];
+    for ( int comp = 0; comp < 3; comp++ ){
+      DRMSource* drmsrcPtr = new DRMSource(this, x, y, z, comp+1, (int)nt, m_DRM_dt);
+      if (!drmsrcPtr->myPoint()){
+        // cannot happen after [DRM-4]; abort rather than break the 3-per-node ordering
+        cerr << "Error: DRM node " << (unsigned long long)ix << " selected but not owned" << endl;
+        MPI_Abort( MPI_COMM_WORLD, 1 );
       }
+      m_DRMSources.push_back(drmsrcPtr);
     }
   }
 
@@ -762,11 +755,13 @@ void EW::readDRMHDF5_data( char* buffer )
   //     MPI_COMM_WORLD instead of read_comm (and the values were unused).
   //   Buffers are now released with free() to match malloc() (the old code
   //   used delete[] on malloc'd memory).
-  if (batch != NULL) free(batch);
   free(xyz_data);
   H5Sclose(node_space);
   H5Dclose(node_set);
-  H5Fclose(fid);
+  H5Fclose(fid);   // collective (mpio) handle used for setup only
+
+  // [SW-5] load the first window (independent, per-rank reads; no collectives)
+  refreshDRMWindow(0);
 
   MPI_Barrier(MPI_COMM_WORLD);
   etime2 = MPI_Wtime();
@@ -781,6 +776,127 @@ void EW::readDRMHDF5_data( char* buffer )
 }
 
 // ======================================================================
+// [SW-6] NEW: sliding time window for the DRM node motions
+// ======================================================================
+
+// Loads, for every DRM source on this rank, the spline coefficients of the
+// window that contains global interval a_kNeed.
+//
+// Windows are aligned to multiples of W = m_DRM_window intervals (so that a
+// time-chunked file is read chunk by chunk) and extended by 2 intervals on each
+// side, so that intervals a_kNeed-1 .. a_kNeed+1 are always inside the window
+// that is loaded. The spline is fitted on the window's samples plus
+// m_DRM_overlap extra samples on each side.
+//
+// Global sample convention (unchanged from the original DRMSource): g[0] = 0
+// at t = 0, and g[m] = node_motion_data column m-1 for m = 1..nt; interval i
+// lies between samples i and i+1, so there are nt intervals.
+//
+// Purely local: no MPI collectives, so it is safe for each rank to call it
+// whenever it needs to. Ranks without DRM sources never open the file.
+//-----------------------------------------------------------------------
+void EW::refreshDRMWindow( int a_kNeed )
+{
+#ifdef USE_HDF5
+  if ( m_DRMSources.empty() )
+    return;
+
+  const int nInt = m_DRM_nt;            // global number of intervals
+  const int W = ( m_DRM_window > 0 && m_DRM_window < nInt ) ? m_DRM_window : nInt;
+  if ( a_kNeed < 0 )      a_kNeed = 0;
+  if ( a_kNeed > nInt-1 ) a_kNeed = nInt-1;
+
+  const int block    = (a_kNeed / W) * W;
+  const int intStart = std::max(0,    block - 2);
+  const int intEnd   = std::min(nInt, block + W + 2);
+
+  // global samples to fit: [s0, s1]
+  int s0 = std::max(0,        intStart - m_DRM_overlap);
+  int s1 = std::min(m_DRM_nt, intEnd   + m_DRM_overlap);
+  while ( s1 - s0 + 1 < 7 ){             // Qspline needs >= 7 points
+    if ( s0 > 0 ) s0--; else if ( s1 < m_DRM_nt ) s1++; else break;
+  }
+  const int nsamp = s1 - s0 + 1;
+  const int m0    = std::max(s0, 1);     // first sample that comes from the file
+  const int lead  = m0 - s0;             // 1 if the synthetic g[0] = 0 is included
+  const hsize_t c0   = (hsize_t)(m0 - 1);
+  const hsize_t ncol = (hsize_t)(s1 - m0 + 1);
+
+  // open lazily (per-rank, read-only, default driver: independent I/O)
+  if ( m_DRM_fid < 0 ){
+    m_DRM_fid = H5Fopen(m_DRM_file.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
+    if ( m_DRM_fid < 0 ){
+      cerr << "Error: rank " << m_myRank << " could not reopen DRM file " << m_DRM_file << endl;
+      MPI_Abort( MPI_COMM_WORLD, 1 );
+    }
+    m_DRM_dset = H5Dopen(m_DRM_fid, "node_motion_data", H5P_DEFAULT);
+    if ( m_DRM_dset < 0 ){
+      cerr << "Error: no 'node_motion_data' in DRM file " << m_DRM_file << endl;
+      MPI_Abort( MPI_COMM_WORLD, 1 );
+    }
+  }
+  const hid_t h5type = (sizeof(float_sw4) == 8) ? H5T_NATIVE_DOUBLE : H5T_NATIVE_FLOAT;
+  hid_t fspace = H5Dget_space(m_DRM_dset);
+
+  // read in batches of nodes (<= ~256 MB), merging consecutive node indices
+  const size_t nloc = m_DRM_myNodes.size();
+  const size_t bytes_per_node = 3*(size_t)ncol*sizeof(float_sw4);
+  size_t batch_nodes = (256ULL*1024ULL*1024ULL) / bytes_per_node;
+  if ( batch_nodes < 1 )    batch_nodes = 1;
+  if ( batch_nodes > nloc ) batch_nodes = nloc;
+
+  std::vector<float_sw4> buf(batch_nodes*3*(size_t)ncol);
+  std::vector<float_sw4> samples(nsamp, 0.0);
+
+  for ( size_t b0 = 0; b0 < nloc; b0 += batch_nodes ){
+    size_t b1 = std::min(nloc, b0 + batch_nodes);
+    size_t k = b0;
+    while ( k < b1 ){
+      size_t run = 1;
+      while ( k+run < b1 && m_DRM_myNodes[k+run] == m_DRM_myNodes[k] + run )
+        run++;
+      hsize_t start[2] = { 3*m_DRM_myNodes[k], c0 };
+      hsize_t count[2] = { 3*(hsize_t)run, ncol };
+      herr_t status = H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
+      ASSERT(status >= 0);
+      hid_t mspace = H5Screate_simple(2, count, NULL);
+      status = H5Dread(m_DRM_dset, h5type, mspace, fspace, H5P_DEFAULT,
+                       &buf[(k-b0)*3*(size_t)ncol]);
+      ASSERT(status >= 0);
+      H5Sclose(mspace);
+      k += run;
+    }
+    // fit each source's window; sources 3*k..3*k+2 belong to owned node k
+    for ( size_t kk = b0; kk < b1; kk++ )
+      for ( int comp = 0; comp < 3; comp++ ){
+        const float_sw4* row = &buf[((kk-b0)*3 + comp)*(size_t)ncol];
+        for ( int s = 0; s < lead; s++ ) samples[s] = 0.0;   // g[0] = 0
+        for ( hsize_t c = 0; c < ncol; c++ ) samples[lead + c] = row[c];
+        m_DRMSources[3*kk + comp]->setWindow( &samples[0], nsamp, s0, intStart, intEnd );
+      }
+  }
+  H5Sclose(fspace);
+
+  m_DRM_winStart = intStart;
+  m_DRM_winEnd   = intEnd;
+  if ( mVerbose >= 3 )
+    printf("> rank %d: DRM window intervals [%d,%d) loaded (samples %d..%d)\n",
+           m_myRank, intStart, intEnd, s0, s1);
+#endif // USE_HDF5
+}
+
+// Closes this rank's handle on the DRM file. refreshDRMWindow reopens it if a
+// later solve (e.g. another EQL iteration) needs a different window.
+//-----------------------------------------------------------------------
+void EW::closeDRMWindowFile()
+{
+#ifdef USE_HDF5
+  if ( m_DRM_dset >= 0 ) { H5Dclose(m_DRM_dset); m_DRM_dset = -1; }
+  if ( m_DRM_fid  >= 0 ) { H5Fclose(m_DRM_fid);  m_DRM_fid  = -1; }
+#endif
+}
+
+// ======================================================================
 // [2] DRM computation functions
 // ======================================================================
 
@@ -792,6 +908,20 @@ void EW::DRMSourcesToUField( vector<Sarray>& a_U, float_sw4 t, bool inner )
 {
   // Presently, we assume all the DRM happens in the top-most grid
   int g = 0;
+
+  // [SW-7] NEW: make sure the loaded time window covers t. getU(t) uses interval
+  //   k = floor(t/dt); we require k-1..k+1 to be loaded (slack for rounding), and
+  //   otherwise load the window containing k. This also handles jumps backwards
+  //   in time (a restart, or the next EQL iteration starting again at t = 0).
+  if ( !m_DRMSources.empty() ){
+    int kNeed = static_cast<int>( floor( t/m_DRM_dt ) );
+    if ( kNeed < 0 )            kNeed = 0;
+    if ( kNeed > m_DRM_nt-1 )   kNeed = m_DRM_nt-1;
+    int kLo = std::max(0, kNeed-1);
+    int kHi = std::min(m_DRM_nt-1, kNeed+1);
+    if ( kLo < m_DRM_winStart || kHi >= m_DRM_winEnd )
+      refreshDRMWindow( kNeed );
+  }
 
   // We iterate over all the source objects in m_DRMSources
   float_sw4 value;

@@ -1425,6 +1425,11 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
     }
   } // end time stepping loop
 
+  // [SW-8] NEW: release this rank's handle on the DRM file (reopened lazily if
+  //   solve() runs again, e.g. for the next EQL iteration)
+  if ( m_use_DRM )
+    closeDRMWindowFile();
+
   if ( !mQuiet && proc_zero() )
     cout << "  Time stepping finished..." << endl;
 

@@ -46,9 +46,14 @@ class DRMSource{
 
   public:
 
+  // [SW-1] CHANGED: the constructor no longer takes the time series. It only
+  //   records where the source is and finds its grid point. The time series is
+  //   supplied, one window at a time, through setWindow().
+  //   a_nSamples = number of samples in node_motion_data (nt); one leading zero
+  //   sample at t = 0 is added internally, as the old constructor did.
   DRMSource(EW * a_ew,
     float_sw4  x0, float_sw4  y0, float_sw4  z0, int comp,
-    float_sw4* pars, int npts, float_sw4 dt);
+    int a_nSamples, float_sw4 dt);
   ~DRMSource();
 
   int m_i0, m_j0, m_k0;
@@ -62,18 +67,30 @@ class DRMSource{
 
   bool myPoint(){ return m_myPoint; }
 
+  // [SW-1] NEW: load spline coefficients for global intervals
+  //   [a_intStart, a_intEnd), fitted on the global samples
+  //   a_samples[0..a_nSamp-1] = g[a_firstSample .. a_firstSample+a_nSamp-1],
+  //   where g[0] = 0 and g[m] = file column m-1 for m >= 1.
+  void setWindow( const float_sw4* a_samples, int a_nSamp, int a_firstSample,
+                  int a_intStart, int a_intEnd );
+
+  // [SW-1] NEW: total number of spline intervals (global), = number of samples incl. g[0] minus 1
+  int numIntervals() const { return mNpts-1; }
+
   private:
   DRMSource();
-    
+
   // void correct_Z_level( EW *a_ew );
   void compute_grid_point( EW *a_ew );
-  int spline_interpolation( );
 
   float_sw4 mX0,mY0,mZ0;
   float_sw4 mDt;
-  float_sw4* mPar;
-  int mNpts, mComp;
-  
+  float_sw4 mT0;     // [SW-1] start time of the series (0, as before)
+  float_sw4* mPar;   // [SW-1] now holds 6 coefficients per interval of the CURRENT window only
+  int mNpts, mComp;  // mNpts = total global samples incl. g[0] (= nt+1, as before)
+  int m_kOffset;     // [SW-1] global index of the first interval held in mPar
+  int m_nInt;        // [SW-1] number of intervals held in mPar
+
   bool m_myPoint;
 };
 #endif
