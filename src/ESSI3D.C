@@ -224,7 +224,16 @@ void ESSI3D::update_image(int a_cycle, float_sw4 a_time, float_sw4 a_dt,
     open_vel_file(a_cycle, a_path, a_time, a_Z);
 
   if (m_dumpInterval != -1) {
-    if (a_cycle % m_dumpInterval != 0 && a_cycle != mNumberOfTimeSteps) return;
+    // [ESSI-3] BUG FIX: the last time step used to be written even when it was
+    //   not a multiple of the dump interval. a_cycle/m_dumpInterval then gave the
+    //   index of the previous stored sample, which was overwritten with the
+    //   solution at a later time. Now only multiples of the interval are stored;
+    //   the last step still closes the file.
+    if (a_cycle % m_dumpInterval != 0) {
+      if (o_cycle == mNumberOfTimeSteps)  // last time step
+        close_vel_file();
+      return;
+    }
     a_cycle /= m_dumpInterval;
   }
 
@@ -348,11 +357,25 @@ void ESSI3D::open_vel_file(int a_cycle, std::string& a_path, float_sw4 a_time,
     for (int d = 0; d < 3; d++)
       origin[d] = (mGlobalDims[2 * d] - 1) * h;  // low end of each index range
     double az = mEW->getGridAzimuth();
-    double dt = mEW->getTimeStep();
+
+    // [ESSI-1] BUG FIX: 'timestep' is the spacing of the STORED samples. It was
+    //   always the solver dt, so with dumpInterval=k the file claimed samples k
+    //   times closer together than they are. m_dumpInterval is -1 when unset,
+    //   which means every step (k = 1), so files without dumpInterval or with
+    //   dumpInterval=1 are unchanged.
+    const int k = (m_dumpInterval > 0) ? m_dumpInterval : 1;
+    double dt = mEW->getTimeStep() * k;
+
+    // [ESSI-2] BUG FIX: 'time start' is the time of the first STORED sample.
+    //   The file is opened on the first call (cycle a_cycle, time a_time), but
+    //   with dumpInterval=k the first sample stored is the first cycle that is a
+    //   multiple of k. For k = 1 this is a_time, as before.
+    const int first_cycle = ((a_cycle + k - 1) / k) * k;
+    double t_first = a_time + (first_cycle - a_cycle) * mEW->getTimeStep();
 
     if (!m_isRestart) {
-      m_hdf5helper->write_header(h, lonlat_origin, az, origin, a_cycle, a_time,
-                                 dt);
+      m_hdf5helper->write_header(h, lonlat_origin, az, origin, a_cycle, t_first,
+                                 dt, k);   // [ESSI-1,2,4]
     }
     if (debug)
       cout << "Creating hdf5 velocity fields..." << endl;
@@ -423,7 +446,14 @@ void ESSI3D::write_image_hdf5(int cycle, std::string& path, float_sw4 t,
   /* debug = true; */
 
   for (int i = 0; i < 3; i++) {
-    int nstep = (int)floor(m_ntimestep / m_dumpInterval);
+    // [ESSI-5] BUG FIX: with dumpInterval unset, m_dumpInterval is -1, so this
+    //   was -m_ntimestep and 'cycle == nstep' never held: a partly filled buffer
+    //   (bufferInterval > 1, which compression turns on with a default of 100)
+    //   was never written at the end of the run, and the last
+    //   m_ntimestep % bufferInterval samples stayed at the fill value (0).
+    //   Use the effective interval (1 when unset) so the last buffer is flushed.
+    const int k = (m_dumpInterval > 0) ? m_dumpInterval : 1;
+    int nstep = m_ntimestep / k;   // number of stored samples (integer division)
     compute_image(a_U[g], i, cycle);
     if (cycle > 0 &&
         (m_nbufstep == m_bufferInterval - 1 || cycle == nstep)) {

@@ -153,7 +153,7 @@ void ESSI3DHDF5::create_file(bool is_restart, bool is_root) {
 
 void ESSI3DHDF5::write_header(double h, double (&lonlat_origin)[2], double az,
                               double (&origin)[3], int cycle, double t,
-                              double dt) {
+                              double dt, int dumpInterval) {
 #ifdef USE_HDF5
   bool debug = false;
   /* debug=true; */
@@ -222,6 +222,18 @@ void ESSI3DHDF5::write_header(double h, double (&lonlat_origin)[2], double az,
                           dataspace_id, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
   ierr = H5Dwrite(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT,
                   &dt);
+  ierr = H5Dclose(dataset_id);
+  ierr = H5Sclose(dataspace_id);
+
+  // [ESSI-4] NEW: number of solver steps per stored sample (1 = every step).
+  //   Its presence also marks a file written with [ESSI-1,2], whose 'timestep'
+  //   and 'time start' describe the stored samples; readers can rely on that.
+  dim = 1;
+  dataspace_id = H5Screate_simple(1, &dim, NULL);
+  dataset_id = H5Dcreate2(m_file_id, "dump interval", H5T_NATIVE_INT,
+                          dataspace_id, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+  ierr = H5Dwrite(dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT,
+                  &dumpInterval);
   ierr = H5Dclose(dataset_id);
   ierr = H5Sclose(dataspace_id);
 
