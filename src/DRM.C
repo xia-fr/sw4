@@ -708,10 +708,14 @@ void EW::readDRMHDF5_data( char* buffer )
     fflush(stdout);
   }
 
-  // We set the number of time steps here while we have the information
-  int e = 0;
-  if (mTimeIsSet[e])
-    mNumberOfTimeSteps[e] = nt;
+  // [SW-11] CHANGED: no longer forces mNumberOfTimeSteps = nt. The solver dt now
+  //   comes from the CFL condition in setupRun() [SW-12], so one step per sample
+  //   no longer holds. Record the time the samples cover instead: with the leading
+  //   g[0] = 0, the global samples sit at t = 0, dt, ..., nt*dt.
+  m_DRM_tmax = static_cast<float_sw4>(nt)*m_DRM_dt;
+  if ( proc_zero() )
+    printf("> DRM node motions: %llu samples, dt = %.8g s, covering t = 0 to %.8g s\n",
+           (unsigned long long)nt, m_DRM_dt, m_DRM_tmax);
 
   // ----------------------------------------------------------------------
   // [SW-5] REPLACES the [DRM-6] full-series batched read.
@@ -913,6 +917,9 @@ void EW::DRMSourcesToUField( vector<Sarray>& a_U, float_sw4 t, bool inner )
   //   k = floor(t/dt); we require k-1..k+1 to be loaded (slack for rounding), and
   //   otherwise load the window containing k. This also handles jumps backwards
   //   in time (a restart, or the next EQL iteration starting again at t = 0).
+  //   [SW-13] NOTE: k is a SAMPLE interval (t/m_DRM_dt), not a solver step, so this
+  //   is independent of the CFL solver dt [SW-12]; it reloads every W sample
+  //   intervals whatever mDt is. No code change needed.
   if ( !m_DRMSources.empty() ){
     int kNeed = static_cast<int>( floor( t/m_DRM_dt ) );
     if ( kNeed < 0 )            kNeed = 0;

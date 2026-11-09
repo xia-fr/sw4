@@ -237,7 +237,8 @@ bool m_use_DRM;
 // the global min/max boundaries of drm
 float_sw4 m_DRM_xMin, m_DRM_xMax, m_DRM_yMin, m_DRM_yMax, m_DRM_zMax;
 int m_DRM_iMin, m_DRM_iMax, m_DRM_jMin, m_DRM_jMax, m_DRM_kMax;
-float_sw4 m_DRM_dt;
+float_sw4 m_DRM_dt;   // sample spacing of the DRM node motions (from the HDF5 file); NOT the solver dt [SW-10]
+float_sw4 m_DRM_tmax; // [SW-10] NEW: last time covered by the node motions = nt*m_DRM_dt
 vector<DRMSource*> m_DRMSources;
 
 // [SW-3] NEW: sliding time window for the DRM node motions (in DRM.C)

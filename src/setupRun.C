@@ -423,19 +423,45 @@ void EW::setupRun( vector<vector<Source*> > & a_GlobalUniqueSources )
      getDtFromRestartFile();
   else
   {
+    // [SW-12] CHANGED: DRM runs now get the same CFL time step as regular runs.
+    // DRM: the boundary motions end at m_DRM_tmax; after that DRMSource::getU()
+    // holds the last sample constant. Shorten a goal time ('time t=') that runs past
+    // the data before computeDT() turns it into a number of steps.
+    if ( m_use_DRM && m_DRM_tmax > 0 )
+    {
+      for( int e=0 ; e < static_cast<int>(mTimeIsSet.size()) ; e++ )
+      {
+        if ( mTimeIsSet[e] && mTmax[e] > m_DRM_tmax*(1+1e-10) )
+        {
+          if ( proc_zero_evzero() )
+            printf("WARNING: goal time t=%g is past the end of the DRM node motions (t=%g); "
+                   "running to t=%g instead\n", mTmax[e], m_DRM_tmax, m_DRM_tmax);
+          mTmax[e] = m_DRM_tmax;
+        }
+      }
+    }
+
+    // Same time step as a regular SW4 run: CFL condition from the grid spacing and
+    // the material (with attenuation), including the goal-time adjustment.
+    // DRM runs used to take mDt = m_DRM_dt here without any stability check.
     if( m_anisotropic )
       computeDTanisotropic();
-    else if ( m_use_DRM ){
-      if (!mQuiet && mVerbose >= 1 && proc_zero_evzero())
-      {
-        printf("*** computing the time step ***\n");
-        printf("using time step loaded from DRM information...\n");
-      }
-      mDt = m_DRM_dt;
-      // number of time steps was set previously when drm info was read in
-    }
     else
       computeDT( );
+
+    if ( m_use_DRM && proc_zero_evzero() )
+    {
+      printf("DRM: solver time step %.8g s from the CFL condition; node motions sampled at "
+             "%.8g s (%.4g solver steps per sample), interpolated in time\n",
+             mDt, m_DRM_dt, m_DRM_dt/mDt);
+      for( int e=0 ; e < static_cast<int>(mTimeIsSet.size()) ; e++ )
+        if ( !mTimeIsSet[e] && m_DRM_tmax > 0 &&
+             mTstart + mNumberOfTimeSteps[e]*mDt > m_DRM_tmax*(1+1e-10) )
+          printf("WARNING: %d steps of %g s run to t=%g, past the end of the DRM node motions "
+                 "(t=%g); boundary motion is held constant after that\n",
+                 mNumberOfTimeSteps[e], mDt, mTstart + mNumberOfTimeSteps[e]*mDt, m_DRM_tmax);
+    }
+
     if( proc_zero_evzero() )
       cout << "  time step = " << mDt << endl;
   }

@@ -513,6 +513,7 @@ EW::EW(const string& fileName, vector<vector<Source*> > & a_GlobalSources,
   m_DRM_jMin(-999),
   m_DRM_jMax(-999),
   m_DRM_kMax(-999),
+  m_DRM_tmax(0.0),   // [SW-10] 0 = unknown; set in readDRMHDF5_data
   // [SW-3] sliding-window defaults (window/overlap can be set on the DRM line)
   m_DRM_window(512),
   m_DRM_overlap(16),
