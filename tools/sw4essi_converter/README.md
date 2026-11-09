@@ -22,7 +22,7 @@ It requires the Python packages numpy, scipy, pandas, h5py, mpi4py, hdf5plugin
    |---|---|
    | `drm_origin_x`, `drm_origin_y` | DRM box origin in the original SW4 coordinates (the box starts at the surface, z = 0) |
    | `x_length`, `y_length`, `depth` | Box size |
-   | `h` | DRM node spacing. Equal to the ESSI spacing is ideal; see *Spatial interpolation* |
+   | `h` | DRM node spacing, and the grid spacing of the SW4 DRM run. Equal to the ESSI spacing is ideal; see *Spatial interpolation*. Each box length must be a whole multiple of `h`, otherwise the script stops with an error |
 
 ## Command-line options
 
@@ -55,7 +55,8 @@ It requires the Python packages numpy, scipy, pandas, h5py, mpi4py, hdf5plugin
 | `node_motion_data` | velocity, 3N x nt (float32); rows 3i, 3i+1, 3i+2 are ux, uy, uz of node i |
 | `xyz` | node coordinates relative to the DRM origin, N x 3 |
 | `dt` | time step of the series (ESSI dt x tstep) |
-| `h` | ESSI grid spacing |
+| `h` | DRM node spacing (`h` from the CSV); SW4 builds the DRM grid with it |
+| `essi_h` | ESSI grid spacing, for reference only (SW4 does not read it) |
 | `t_start`, `t_end` | time range |
 | `grid_lon_lat`, `grid_az` | SW4 grid geolocation, copied from the ESSI file |
 | `drm_origin`, `drm_shape` | DRM box origin and size |
@@ -73,7 +74,9 @@ of a whole number.
 Interpolation adds no information beyond the ESSI resolution, so a DRM `h` equal
 to the ESSI spacing, with the DRM origin on the ESSI grid, is still the most
 accurate choice. Halving `h` gives about 4 times as many nodes, and the output
-file, memory per rank and run time grow by the same factor.
+file, memory per rank and run time grow by the same factor. The SW4 DRM run uses
+this `h` as its grid spacing, so its CFL time step shrinks with it (see *Using
+the file in SW4*).
 
 ## Downsampling in time (`-t n`)
 
@@ -110,6 +113,16 @@ DRM file=/path/to/DRMNodeMotion.h5 window=512 overlap=16
 (default 512, `0` = the whole series), and `overlap=` is the number of extra
 samples fitted on each side of a window (default 16). At startup SW4 prints the
 number of DRM nodes each rank owns and the estimated memory on the busiest rank.
+
+**Time step and run length.** SW4 computes the DRM run's time step from the CFL
+condition, exactly as for a regular run (grid spacing `h`, material, attenuation),
+and interpolates the node motions in time; the file's `dt` is only the sample
+spacing. It prints both. The node motions cover t = 0 to nt x `dt`:
+
+- `time t=...` is honoured, but capped at the end of the node motions (with a
+  warning). To run the whole record, give the record length or anything larger.
+- `time steps=...` is kept as given; SW4 warns if the steps run past the end of
+  the node motions, where the boundary motion is held constant.
 
 ## Example usage
 

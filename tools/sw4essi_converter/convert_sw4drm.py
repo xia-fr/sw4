@@ -372,12 +372,18 @@ def write_to_hdf5_range_2d(h5_fname, gname, dname, data, mystart, myend):
 
 def create_hdf5_csv(
     h5_fname, ncoord, tsteprange, 
-    essi_dt, essi_h, 
+    essi_dt, out_h,
     gen_vel, gen_acc, gen_dis,
-    lonlat, az, sbdmn_0, sbdmn_len
+    lonlat, az, sbdmn_0, sbdmn_len,
+    essi_h=None
 ) -> None:
     """
     Sets up the HDF5 file to save node motions into.
+
+    [PY-10] CHANGED: the 'h' dataset is the spacing of the DRM nodes in this
+    file (out_h, the h from the DRM config CSV), not the ESSI spacing. SW4 builds
+    the whole DRM grid from 'h', so it must match the node spacing. The ESSI
+    spacing is kept as 'essi_h' for reference only; SW4 does not read it.
     """
     h5file = h5py.File(h5_fname, 'w')
     tstart, tend, tstep = (tsteprange[0]+1)*essi_dt, (tsteprange[-1]+1)*essi_dt, tsteprange.step
@@ -393,7 +399,9 @@ def create_hdf5_csv(
     
     # use array form [dt] instead of scalar dt, so that it has a shape and facilitate postprocessing
     dset = h5file.create_dataset('dt', data=[dt], dtype='f8')
-    dset = h5file.create_dataset('h', data=[essi_h], dtype='f8')
+    dset = h5file.create_dataset('h', data=[out_h], dtype='f8')   # [PY-10]
+    if essi_h is not None:
+        dset = h5file.create_dataset('essi_h', data=[essi_h], dtype='f8')   # [PY-10] reference only
 
     dset = h5file.create_dataset('t_start', data=[dt], dtype='f8')
     dset = h5file.create_dataset('t_end', data=[tend - tstart + dt], dtype='f8')
@@ -544,10 +552,15 @@ def generate_acc_dis_time(ssi_fname,
     gen_vel, gen_acc, gen_dis,
     verbose, plot_only, output_fname,
     mpi_rank, mpi_size, output_format,
+    drm_h=None,
 ) -> None:
     """
     The function which does the extraction of DRM boundary data and
     saves the extracted data into a hdf5 file for use with DRM.
+
+    [PY-10] drm_h : float, optional
+        Spacing of the DRM nodes (user_x0, ...). Written to the output 'h'
+        dataset, which SW4 uses as the DRM grid spacing. None -> ESSI spacing.
 
     Parameters
     ----------
@@ -568,6 +581,17 @@ def generate_acc_dis_time(ssi_fname,
     essi_y_len_max = (essi_ny-1) * essi_h
     essi_z_len_max = (essi_nz-1) * essi_h
     
+    # [PY-10] NEW: spacing written to the output file. SW4 sets its DRM grid
+    #   spacing from it, so it has to be the spacing the nodes were generated on.
+    out_h = essi_h if drm_h is None else float(drm_h)
+    if mpi_rank == 0:
+        if abs(out_h - essi_h) > 1e-9*essi_h:
+            print('DRM node spacing h = {:g} differs from ESSI spacing h = {:g} (ratio {:g}); '
+                  'motions are interpolated and the SW4 DRM grid will use h = {:g}.'.format(
+                      out_h, essi_h, out_h/essi_h, out_h))
+        else:
+            print('DRM node spacing h = {:g} (same as ESSI).'.format(out_h))
+
     # Start and end time step
     if start_t > -1e-6 and end_t > -1e-6:
         start_ts = int(abs(start_t)/essi_dt)
@@ -874,8 +898,9 @@ def generate_acc_dis_time(ssi_fname,
     if output_format == "csv" or output_format == "DRM":
         if mpi_rank == 0:
             create_hdf5_csv(output_fname, n_coord, tsteprange, 
-                essi_dt, essi_h, gen_vel, gen_acc, gen_dis, 
-                essi_lonlat, essi_az, subdomain_origin, subdomain_xyz_len)
+                essi_dt, out_h, gen_vel, gen_acc, gen_dis,   # [PY-10] was essi_h
+                essi_lonlat, essi_az, subdomain_origin, subdomain_xyz_len,
+                essi_h=essi_h)
             if my_ncoord[0] > 0:
                 write_to_hdf5_range_2d(output_fname, '/', 'xyz', my_user_coordinates, my_offset, (my_offset+my_ncoord[0]))
                 write_to_hdf5_range(output_fname, '/', 'node_motion_data', output_vel_all, my_offset*3, (my_offset+my_ncoord[0])*3)  # [PY-8]
@@ -1031,7 +1056,22 @@ def convert_drm(
     df = np.loadtxt(csv_fname, delimiter=',', dtype=float, skiprows=1)
     drm_xyz_0 = [df[0], df[1], 0.0] # by default we assume drm boundary origin lies on surface
     drm_xyz_len = [df[2], df[3], df[4]]
-    drm_h = df[5]
+    drm_h = float(df[5])
+
+    # [PY-10] NEW: SW4 places the DRM box edges with floor(x/h+1), and the node
+    #   planes below are built with np.arange(..., h). Both only agree when each
+    #   box length is a whole number of h, so check that before doing any work.
+    if drm_h <= 0:
+        if mpi_rank == 0:
+            print('Error: DRM h must be > 0, got', drm_h)
+        exit(1)
+    for name, length in zip(('x', 'y', 'z'), drm_xyz_len):
+        n = length / drm_h
+        if abs(n - round(n)) > 1e-6:
+            if mpi_rank == 0:
+                print('Error: DRM {} length {:g} is not a multiple of DRM h = {:g} ({:g} cells)'.format(
+                    name, length, drm_h, n))
+            exit(1)
     
     # Generate the list of node coordinates given boundary information
     # - In SW4, the DRM boundary requires four layers of node motions.
@@ -1053,7 +1093,8 @@ def convert_drm(
         start_t, end_t, tstep,
         gen_vel, gen_acc, gen_dis,
         verbose, plot_only, output_fname,
-        mpi_rank, mpi_size, output_format)
+        mpi_rank, mpi_size, output_format,
+        drm_h=drm_h)   # [PY-10]
     
     return
 
