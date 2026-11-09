@@ -324,6 +324,25 @@ def get_essi_meta(ssi_fname, verbose):
     
     return x0, y0, z0, h, nx, ny, nz, nt, dt, timeseq, ll, az
 
+def get_essi_time_meta(ssi_fname):
+    """
+    [PY-12] NEW: time metadata of the ESSI file needed to place its samples.
+
+    Returns
+    -------
+    t0 : float
+        'time start', the time of the first stored sample.
+    dump_interval : int or None
+        'dump interval' (solver steps per stored sample). Only files written by
+        an SW4 with [ESSI-4] have it; None for older files, whose 'timestep' is
+        the solver dt even if the run used ssioutput dumpInterval > 1.
+    """
+    essiout = h5py.File(ssi_fname, 'r')
+    t0 = float(essiout['time start'][0])
+    k = int(essiout['dump interval'][0]) if 'dump interval' in essiout else None
+    essiout.close()
+    return t0, k
+
 def write_to_hdf5_range(h5_fname, gname, dname, data, mystart, myend):
     """
     Writes data to the hdf5 file within a given range.
@@ -553,6 +572,7 @@ def generate_acc_dis_time(ssi_fname,
     verbose, plot_only, output_fname,
     mpi_rank, mpi_size, output_format,
     drm_h=None,
+    essi_dump_interval=0,
 ) -> None:
     """
     The function which does the extraction of DRM boundary data and
@@ -561,6 +581,10 @@ def generate_acc_dis_time(ssi_fname,
     [PY-10] drm_h : float, optional
         Spacing of the DRM nodes (user_x0, ...). Written to the output 'h'
         dataset, which SW4 uses as the DRM grid spacing. None -> ESSI spacing.
+
+    [PY-13] essi_dump_interval : int, optional
+        For ESSI files from an SW4 without [ESSI-4] only: the ssioutput
+        dumpInterval the source run used. 0 or 1 = every step (the default).
 
     Parameters
     ----------
@@ -592,13 +616,49 @@ def generate_acc_dis_time(ssi_fname,
         else:
             print('DRM node spacing h = {:g} (same as ESSI).'.format(out_h))
 
+    # [PY-12] NEW: ESSI time convention. SW4 stores ESSI sample i at
+    #   t = (i+1)*essi_dt (the first sample is the first stored cycle, not t = 0),
+    #   and SW4's DRM code places output column m at t = (m+1)*dt. Everything
+    #   below relies on 'time start' == essi_dt, so check it.
+    # [PY-13] NEW: ESSI files from an SW4 without [ESSI-4] record the solver dt
+    #   as 'timestep' even when ssioutput used dumpInterval=k > 1. For those,
+    #   -k/--essidumpinterval gives k: the sample spacing and first-sample time
+    #   are scaled by k, and the last sample is dropped, since that SW4 could
+    #   overwrite it with the solution at the final step (fixed by [ESSI-3]).
+    essi_t0, essi_k = get_essi_time_meta(ssi_fname)
+    essi_nt_use = essi_nt
+    k_legacy = essi_dump_interval if essi_dump_interval and essi_dump_interval > 1 else 1
+    if essi_k is not None:
+        if k_legacy > 1 and k_legacy != essi_k:
+            if mpi_rank == 0:
+                print('Error: -k {} given, but the ESSI file records dump interval {}; '
+                      'drop -k for files from this SW4 version'.format(k_legacy, essi_k))
+            exit(1)
+        if mpi_rank == 0:
+            print('ESSI dump interval = {} (from file), sample dt = {:.8g} s'.format(essi_k, essi_dt))
+    elif k_legacy > 1:
+        essi_dt *= k_legacy
+        essi_t0 *= k_legacy
+        essi_nt_use = essi_nt - 1
+        if mpi_rank == 0:
+            print('Legacy ESSI file with dumpInterval = {} (-k): sample dt = {:.8g} s; '
+                  'dropping the last sample'.format(k_legacy, essi_dt))
+    elif mpi_rank == 0:
+        print('ESSI file has no dump interval record (older SW4): assuming every '
+              'step was stored. If the source run used ssioutput dumpInterval=k > 1, '
+              'rerun with -k k.')
+    if abs(essi_t0 - essi_dt) > 1e-6*essi_dt and mpi_rank == 0:
+        print('WARNING: ESSI time start {:.8g} s != sample dt {:.8g} s. SW4 DRM assumes the '
+              'first sample is at one dt (a source run from t = 0); the boundary motions '
+              'will be shifted by {:.8g} s.'.format(essi_t0, essi_dt, essi_dt - essi_t0))
+
     # Start and end time step
     if start_t > -1e-6 and end_t > -1e-6:
         start_ts = int(abs(start_t)/essi_dt)
         end_ts   = int(abs(end_t)/essi_dt)
-        # if start and end time step equals, we are likely to want all following steps till the end 
-        if end_ts > essi_nt or start_ts == end_ts:
-            end_ts = int(essi_nt)
+        # if start and end time step equals, we are likely to want all following steps till the end
+        if end_ts > essi_nt_use or start_ts == end_ts:   # [PY-13] was essi_nt
+            end_ts = int(essi_nt_use)
         if end_ts <= start_ts:
             print('End time step {} <= start time step {}, no need to extract motions, exit...'.format(end_ts, start_ts))
             exit(0)
@@ -607,8 +667,17 @@ def generate_acc_dis_time(ssi_fname,
         exit(0)
 
     # Time step information
-    tsteprange = range(start_ts, end_ts, tstep)
+    # [PY-11] BUG FIX: keep ESSI indices tstep-1, 2*tstep-1, ... whose times
+    #   tstep*essi_dt, 2*tstep*essi_dt, ... are exactly where SW4 places output
+    #   columns 0, 1, ... (t = (m+1)*dt). The old range started at index 0 (time
+    #   essi_dt), so with tstep = n > 1 every boundary motion was applied
+    #   (n-1)*essi_dt late. tstep = 1 is unchanged.
+    tsteprange = range(start_ts + tstep - 1, end_ts, tstep)
     nsteps = len(tsteprange)
+    if nsteps < 1:
+        if mpi_rank == 0:
+            print('Error: --tstep {} keeps no samples of the {} ESSI steps'.format(tstep, end_ts - start_ts))
+        exit(1)
     dt = tstep * essi_dt
 
     # Print metadata for ssioutput file
@@ -1026,7 +1095,8 @@ def generate_drm_nodes(drm_planes, h):
 def convert_drm(
     csv_fname, ssi_fname, save_path, 
     ref_coord, start_t, end_t, tstep, 
-    plot_only, mpi_rank, mpi_size, verbose
+    plot_only, mpi_rank, mpi_size, verbose,
+    essi_dump_interval=0   # [PY-13]
 ) -> None:
     """
     Reads the DRM boundary configuration from the CSV file, and calls 
@@ -1094,7 +1164,8 @@ def convert_drm(
         gen_vel, gen_acc, gen_dis,
         verbose, plot_only, output_fname,
         mpi_rank, mpi_size, output_format,
-        drm_h=drm_h)   # [PY-10]
+        drm_h=drm_h,   # [PY-10]
+        essi_dump_interval=essi_dump_interval)   # [PY-13]
     
     return
 
@@ -1126,10 +1197,15 @@ if __name__ == "__main__":
     parser.add_argument("-t", "--tstep", help="keep every n-th ESSI time step in the output (default 1 = all steps)", type=int, default=1)
     # [PY-3] NEW: time-chunk length of node_motion_data (match SW4's DRM window=)
     parser.add_argument("-c", "--chunktime", help="time samples per HDF5 chunk of node_motion_data (default 512)", type=int, default=512)
+    # [PY-13] NEW: for ESSI files from an SW4 without the 'dump interval' record
+    parser.add_argument("-k", "--essidumpinterval", help="legacy ESSI files only: the ssioutput dumpInterval of the source run (default 0 = every step)", type=int, default=0)
     args = parser.parse_args()
     if args.chunktime < 1:
         print('Error: --chunktime must be >= 1, exit...')
         exit(0)
+    if args.essidumpinterval < 0:
+        print('Error: --essidumpinterval must be >= 0, exit...')
+        exit(1)
     DRM_CHUNK_TIME = args.chunktime
     
     if args.verbose:
@@ -1173,7 +1249,8 @@ if __name__ == "__main__":
     
     # EXTRACT THE DATA AND SAVE
     if use_drm:
-        convert_drm(drm_fname, ssi_fname, save_path, ref_coord, start_t, end_t, tstep, plotonly, mpi_rank, mpi_size, verbose)
+        convert_drm(drm_fname, ssi_fname, save_path, ref_coord, start_t, end_t, tstep, plotonly, mpi_rank, mpi_size, verbose,
+                    essi_dump_interval=args.essidumpinterval)   # [PY-13]
     # elif use_csv:
     #     convert_csv(csv_fname, ssi_fname, save_path, ref_coord, start_t, end_t, tstep, plotonly, mpi_rank, mpi_size, verbose)
     

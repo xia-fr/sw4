@@ -34,6 +34,7 @@ It requires the Python packages numpy, scipy, pandas, h5py, mpi4py, hdf5plugin
 -e or --essi:      full path to the SW4 ESSI output file (required), default=""
 -t or --tstep:     keep every n-th ESSI time step in the output, default=1 (all steps)
 -c or --chunktime: time samples per HDF5 chunk of node_motion_data, default=512
+-k or --essidumpinterval: legacy ESSI files only, the ssioutput dumpInterval of the source run, default=0 (every step)
 ```
 
 ## What the script does
@@ -80,13 +81,36 @@ the file in SW4*).
 
 ## Downsampling in time (`-t n`)
 
-The output keeps ESSI steps 0, n, 2n, ..., and its `dt` is n times the ESSI time
-step. SW4 reads `dt` from the file and spline-interpolates each node's series
-onto its own time step, so nothing else needs changing. No anti-alias filter is
+The output keeps ESSI samples n-1, 2n-1, 3n-1, ..., and its `dt` is n times the
+ESSI sample spacing. These are the samples at t = dt, 2 dt, 3 dt, ..., which is
+where SW4 places the output columns (see *Time convention*). Versions before
+this fix kept samples 0, n, 2n, ..., which put every boundary motion (n-1) ESSI
+steps late; regenerate files made with `-t` > 1. SW4 reads `dt` from the file
+and spline-interpolates each node's series onto its own time step, so nothing
+else needs changing. No anti-alias filter is
 applied: the ESSI motions must have no content above the new Nyquist frequency,
 1/(2 n dt_ESSI), which the script prints. A safe choice keeps it at least 2 to 3
 times the simulation's maximum resolved frequency. The series are downsampled
 right after reading, so memory per rank and the file size drop by about n.
+
+## Time convention
+
+SW4 stores ESSI sample i at t = (i+1) x `timestep` (the first sample is the
+first stored step, not t = 0), and its DRM code places output column m at
+t = (m+1) x `dt`, after a zero sample at t = 0. The script relies on the ESSI
+`time start` being one `timestep`, i.e. a source run that starts at t = 0, and
+warns if it is not.
+
+**`ssioutput dumpInterval`.** An SW4 with the ESSI fix writes `timestep` as the
+spacing of the stored samples (solver dt x dumpInterval), `time start` as the
+time of the first stored sample, and the interval itself as `dump interval`.
+The script reads these and needs no option. Older SW4 versions wrote the solver
+dt as `timestep` whatever the dumpInterval, and could overwrite the last stored
+sample with the solution at the final step. For an ESSI file from an older SW4
+whose source run used `dumpInterval=k` with k > 1, pass `-k k`: the script then
+scales the sample spacing by k and drops the last sample. Without `-k` such a
+file is read as if every step were stored, which it cannot detect. Files from
+runs without `dumpInterval` (or with 1) need nothing.
 
 ## Chunk layout (`-c`)
 
